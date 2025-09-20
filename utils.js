@@ -1,57 +1,101 @@
 import fs from "fs";
 import moment from "moment";
+import chalk from "chalk";
+import { logIT, LOG_LEVEL } from "./log.js";
 
-export function storeJson(fname, jsonObj) {
-  fs.writeFileSync(fname, JSON.stringify(jsonObj), function (err) {
-    if (err) {
-      logIT(err);
+// Utility function to calculate risk-adjusted prices
+export function calculateRiskPrices(longPrice, shortPrice, riskLevel = 2) {
+    const riskMultiplier = {
+        1: { long: 1.005, short: 0.995 },
+        2: { long: 1.01, short: 0.99 },
+        3: { long: 1.02, short: 0.98 },
+        4: { long: 1.03, short: 0.97 },
+        5: { long: 1.04, short: 0.96 }
+    };
+
+    const risk = riskMultiplier[riskLevel] || riskMultiplier[2];
+    return {
+        long_risk: longPrice * risk.long,
+        short_risk: shortPrice * risk.short
+    };
+}
+
+// Utility function to process order quantity with min/max constraints
+export function processOrderQuantity(orderSize, minOrderQty, qtyStep = 1) {
+    // Ensure order quantity is at least the minimum required
+    let processedQty = orderSize;
+    if (processedQty < minOrderQty) {
+        processedQty = minOrderQty;
+        console.log(chalk.yellow(`Adjusted order quantity to minimum required: ${processedQty}`));
     }
-  });
+
+    // Round to nearest qtyStep
+    processedQty = Math.round(processedQty / qtyStep) * qtyStep;
+
+    // Convert to string with appropriate decimal places
+    let decimalPlaces = 0;
+    if (qtyStep < 1) {
+        decimalPlaces = qtyStep.toString().split(".")[1]?.length || 0;
+    }
+
+    return processedQty.toFixed(decimalPlaces).toString();
 }
 
-export function loadJson(fname, obj) {
-  if (fs.existsSync(fname)) {
-    const json_data = fs.readFileSync(fname, "utf8");
-    let jsonObj = JSON.parse(json_data);
-    Object.entries(jsonObj).forEach(([k, v]) => (obj[k] = v));
-  }
+// Utility function to handle blacklist/whitelist filtering
+export function shouldProcessPair(pair, blacklist, whitelist) {
+    const blacklistPairs = blacklist ? blacklist.replace(/\s+/g, '').split(',') : [];
+    const whitelistPairs = whitelist ? whitelist.replace(/\s+/g, '').split(',') : [];
+
+    // Check if pair is blacklisted
+    if (blacklistPairs.includes(pair)) {
+        return false;
+    }
+
+    // Check whitelist if enabled
+    if (whitelistPairs.length > 0) {
+        return whitelistPairs.includes(pair);
+    }
+
+    return true;
 }
 
-function jsonToCsv(json) {
-  const value = "null";
-  const items = json;
-  const replacer = (key, value) => (value === null ? "" : value); // specify how you want to handle null values here
-  const header = Object.keys(items[0]);
-  const csv = [
-    header.join(","), // header row first
-    ...items.map((row) =>
-      header
-        .map((fieldName) => JSON.stringify(row[fieldName], replacer))
-        .join(",")
-    ),
-  ].join("\r\n");
-  return csv;
+// Utility function to calculate bot uptime
+export function calculateBotUptime(uptimeSeconds) {
+    var elapsedDays = uptimeSeconds / 86400;  //days
+    var restSeconds = uptimeSeconds % 86400;   // rest of seconds left
+    var elapsedHours = restSeconds / 3600;          // hours
+    restSeconds = restSeconds % 3600;
+    var elapsedMinutes = restSeconds / 60;          // minutes
+    var elapsedSeconds = restSeconds % 60;
+    var times = [parseInt(elapsedDays), parseInt(elapsedHours), parseInt(elapsedMinutes), parseInt(elapsedSeconds)];
+    return times;
 }
 
+// Keep traceTrade function as it might be used elsewhere or by other modules
 export function traceTrade(step, obj, fields) {
-  let csv_line = moment().local().toString() + "," + step;
-  fields.forEach((key) => (csv_line += "," + (obj[key] ?? "")));
-  csv_line += "\n";
+    let csv_line = moment().local().toString() + "," + step;
+    fields.forEach((key) => (csv_line += "," + (obj[key] ?? "")));
+    csv_line += "\n";
 
-  if (!fs.existsSync("trades.csv")) {
-    let csv_header = "time, step";
-    fields.forEach((key) => (csv_header += "," + key));
-    csv_line = csv_header + "\n" + csv_line;
-  }
-
-  fs.appendFile(
-    "trades.csv",
-    csv_line.replace(/\u001b\[\d+m/g, ""),
-    function (err) {
-      if (err) {
-        logIT("Logging error: " + err);
-        return console.log("Logging error: " + err);
-      }
+    if (!fs.existsSync("trades.csv")) {
+        let csv_header = "time, step";
+        fields.forEach((key) => (csv_header += "," + key));
+        csv_line = csv_header + "\n" + csv_line;
     }
-  );
+
+    fs.appendFile(
+        "trades.csv",
+        csv_line.replace(/\u001b\[\d+m/g, ""),
+        function (err) {
+            if (err) {
+                logIT("Logging error: " + err);
+                return console.log("Logging error: " + err);
+            }
+        }
+    );
 }
+
+// Unused utility functions - decommissioned
+// storeJson - not used in the codebase
+// loadJson - not used in the codebase
+// jsonToCsv - not used in the codebase
