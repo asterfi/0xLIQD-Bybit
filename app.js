@@ -785,8 +785,8 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
 
             if (settingsIndex !== -1) {
                 if (liquidationOrders[index].price < settings.pairs[settingsIndex].long_price) {
-                    // LONG liquidation - we should go SHORT (counter-trading)
-                    var position = await getPosition(pair, "Sell");
+                    // LONG liquidation
+                    var position = await getPosition(pair, "Buy");
 
                     // In hedge mode, we always allow new positions regardless of existing positions
                     // In one-way mode, traditional logic applies
@@ -812,32 +812,32 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
 
                         console.log(chalk.blue("Placing SELL order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
 
-                        const positionIdx = isHedgeMode() ? 2 : 0; // 2 for hedge Sell, 0 for one-way
-                        const order = await createMarketOrder(restClient, pair, "Sell", orderQty, positionIdx);
+                        const positionIdx = isHedgeMode() ? 1 : 0; // 1 for hedge Buy, 0 for one-way
+                        const order = await createMarketOrder(restClient, pair, "Buy", orderQty, positionIdx);
 
                         // Check if order was successful
                         if (order.retCode === 0 && order.result) {
-                            logIT(`New SHORT Order Placed for ${pair} at ${settings.pairs[settingsIndex].order_size} size`, LOG_LEVEL.INFO);
+                            logIT(`New LONG Order Placed for ${pair} at ${settings.pairs[settingsIndex].order_size} size`, LOG_LEVEL.INFO);
                             if (process.env.USE_DISCORD == "true") {
-                                orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Sell", position.size, position.percentGain, trigger_qty);
+                                orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Buy", position.size, position.percentGain, trigger_qty);
                             }
 
                             // Set TP/SL after initial entry
                             setTimeout(async () => {
                                 try {
-                                    const updatedPosition = await getPosition(pair, "Sell");
+                                    const updatedPosition = await getPosition(pair, "Buy");
                                     if (updatedPosition.size > 0) {
-                                        logIT(`Setting TP/SL after initial SHORT entry for ${pair}`, LOG_LEVEL.INFO);
+                                        logIT(`Setting TP/SL after initial LONG entry for ${pair}`, LOG_LEVEL.INFO);
                                         await setSafeTPSL(pair, updatedPosition);
                                     }
                                 } catch (error) {
-                                    logIT(`Error setting TP/SL after initial SHORT entry for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
+                                    logIT(`Error setting TP/SL after initial LONG entry for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
                                 }
                             }, 500); // Small delay to ensure order is filled
                         } else {
-                            logIT(`Failed to place SHORT Order for ${pair}: ${order.retMsg} (Error Code: ${order.retCode})`, LOG_LEVEL.ERROR);
+                            logIT(`Failed to place LONG Order for ${pair}: ${order.retMsg} (Error Code: ${order.retCode})`, LOG_LEVEL.ERROR);
                             if (process.env.USE_DISCORD == "true") {
-                                messageWebhook("Failed to place SHORT Order for " + pair + ": " + order.retMsg);
+                                messageWebhook("Failed to place LONG Order for " + pair + ": " + order.retMsg);
                             }
                         }
 
@@ -937,8 +937,8 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
             var settingsIndex = await settings.pairs.findIndex(x => x.symbol === pair);
             if (settingsIndex !== -1) {
                 if (liquidationOrders[index].price > settings.pairs[settingsIndex].short_price) {
-                    // SHORT liquidation - we should go LONG (counter-trading)
-                    var position = await getPosition(pair, "Buy");
+                    // SHORT liquidation
+                    var position = await getPosition(pair, "Sell");
 
                     //position.size should never be null now with the improved getPosition function
                     //no open position (size === 0) or in hedge mode - freely enter new trade
@@ -959,34 +959,34 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                         // Process order quantity using utility function
                         orderQty = processOrderQuantity(orderQty, minOrderQty, qtyStep);
 
-                        console.log(chalk.blue("Placing BUY order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
+                        console.log(chalk.blue("Placing SELL order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
 
-                        const positionIdx = isHedgeMode() ? 1 : 0; // 1 for hedge Buy, 0 for one-way
-                        const order = await createMarketOrder(restClient, pair, "Buy", orderQty, positionIdx);
+                        const positionIdx = isHedgeMode() ? 2 : 0; // 2 for hedge Sell, 0 for one-way
+                        const order = await createMarketOrder(restClient, pair, "Sell", orderQty, positionIdx);
 
                         // Check if order was successful
                         if (order.retCode === 0 && order.result) {
-                            logIT(`New LONG Order Placed for ${pair} at ${settings.pairs[settingsIndex].order_size} size`, LOG_LEVEL.INFO);
+                            logIT(`New SHORT Order Placed for ${pair} at ${settings.pairs[settingsIndex].order_size} size`, LOG_LEVEL.INFO);
                             if (process.env.USE_DISCORD == "true") {
-                                orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Buy", position.size, position.percentGain, trigger_qty);
+                                orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Sell", position.size, position.percentGain, trigger_qty);
                             }
 
                             // Set TP/SL after initial entry
                             setTimeout(async () => {
                                 try {
-                                    const updatedPosition = await getPosition(pair, "Buy");
+                                    const updatedPosition = await getPosition(pair, "Sell");
                                     if (updatedPosition.size > 0) {
-                                        logIT(`Setting TP/SL after initial LONG entry for ${pair}`, LOG_LEVEL.INFO);
+                                        logIT(`Setting TP/SL after initial SHORT entry for ${pair}`, LOG_LEVEL.INFO);
                                         await setSafeTPSL(pair, updatedPosition);
                                     }
                                 } catch (error) {
-                                    logIT(`Error setting TP/SL after initial LONG entry for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
+                                    logIT(`Error setting TP/SL after initial SHORT entry for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
                                 }
                             }, 500); // Small delay to ensure order is filled
                         } else {
-                            logIT(`Failed to place LONG Order for ${pair}: ${order.retMsg} (Error Code: ${order.retCode})`, LOG_LEVEL.ERROR);
+                            logIT(`Failed to place SHORT Order for ${pair}: ${order.retMsg} (Error Code: ${order.retCode})`, LOG_LEVEL.ERROR);
                             if (process.env.USE_DISCORD == "true") {
-                                messageWebhook("Failed to place LONG Order for " + pair + ": " + order.retMsg);
+                                messageWebhook("Failed to place SHORT Order for " + pair + ": " + order.retMsg);
                             }
                         }
                     }
@@ -1032,13 +1032,13 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                                 if (order.retCode === 0 && order.result) {
                                     console.log(chalk.bgRedBright("LONG DCA Order Placed for " + pair + " at " + settings.pairs[settingsIndex].order_size + " size"));
                                     if (process.env.USE_DISCORD == "true") {
-                                        orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Buy", position.size, position.percentGain, trigger_qty);
+                                        orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Sell", position.size, position.percentGain, trigger_qty);
                                     }
 
                                     // Update TP/SL after DCA
                                     setTimeout(async () => {
                                         try {
-                                            const updatedPosition = await getPosition(pair, "Buy");
+                                            const updatedPosition = await getPosition(pair, "Sell");
                                             if (updatedPosition.size > 0) {
                                                 logIT(`Updating TP/SL after LONG DCA for ${pair}`, LOG_LEVEL.INFO);
                                                 await setSafeTPSL(pair, updatedPosition);
