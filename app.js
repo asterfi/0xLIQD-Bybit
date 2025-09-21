@@ -737,6 +737,89 @@ async function totalOpenPositions() {
 // Order management functions
 let orderLocks = new Map(); // To prevent race conditions
 
+/**
+ * Check all existing positions and set TP/SL for those without them
+ * Called during bot startup to ensure all positions have proper risk management
+ */
+async function checkAndSetMissingTPSL() {
+    try {
+        console.log(chalk.blue("Checking for existing positions without TP/SL..."));
+        logIT("Checking for existing positions without TP/SL", LOG_LEVEL.INFO);
+
+        // Get all positions
+        const positions = await restClient.getPositionInfo({ category: 'linear', settleCoin: 'USDT' });
+
+        if (!positions?.result?.list || positions.result.list.length === 0) {
+            console.log(chalk.green("No existing positions found"));
+            return;
+        }
+
+        let positionsFixed = 0;
+        let positionsChecked = 0;
+
+        for (const position of positions.result.list) {
+            if (position.size > 0) { // Only check open positions
+                positionsChecked++;
+                const symbol = position.symbol;
+                const side = position.side;
+
+                // Check if position lacks TP or SL
+                const hasTP = position.takeProfit && parseFloat(position.takeProfit) > 0;
+                const hasSL = position.stopLoss && parseFloat(position.stopLoss) > 0;
+
+                if (!hasTP || !hasSL) {
+                    console.log(chalk.yellow(`Position ${symbol} (${side}) missing TP/SL - TP: ${hasTP}, SL: ${hasSL}`));
+                    logIT(`Position ${symbol} (${side}) missing TP/SL - TP: ${hasTP}, SL: ${hasSL}`, LOG_LEVEL.WARNING);
+
+                    // Get position data in correct format for takeProfit function
+                    const positionData = {
+                        side: side,
+                        avgPrice: position.avgPrice,
+                        entryPrice: position.avgPrice,
+                        entry_price: position.avgPrice,
+                        size: parseFloat(position.size),
+                        take_profit: position.takeProfit,
+                        stop_loss: position.stopLoss
+                    };
+
+                    try {
+                        // Set TP/SL with safety lock
+                        const success = await setSafeTPSL(symbol, positionData);
+                        if (success) {
+                            positionsFixed++;
+                            console.log(chalk.green(`✓ TP/SL set successfully for ${symbol}`));
+                            logIT(`TP/SL set successfully for ${symbol}`, LOG_LEVEL.INFO);
+                        } else {
+                            console.log(chalk.red(`✗ Failed to set TP/SL for ${symbol}`));
+                        }
+                    } catch (error) {
+                        console.log(chalk.red(`✗ Error setting TP/SL for ${symbol}: ${error.message}`));
+                        logIT(`Error setting TP/SL for ${symbol}: ${error.message}`, LOG_LEVEL.ERROR);
+                    }
+
+                    // Small delay between TP/SL settings to avoid rate limits
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                }
+            }
+        }
+
+        console.log(chalk.green(`TP/SL check completed: ${positionsFixed}/${positionsChecked} positions fixed`));
+        logIT(`TP/SL check completed: ${positionsFixed}/${positionsChecked} positions fixed`, LOG_LEVEL.INFO);
+
+        if (positionsFixed > 0 && process.env.USE_DISCORD == "true") {
+            messageWebhook(`🛡️ Startup TP/SL Check: Fixed ${positionsFixed} positions without proper risk management`, 'success');
+        }
+
+    } catch (error) {
+        console.log(chalk.red(`Error during TP/SL check: ${error.message}`));
+        logIT(`Error during TP/SL check: ${error.message}`, LOG_LEVEL.ERROR);
+
+        if (process.env.USE_DISCORD == "true") {
+            messageWebhook(`❌ Error during startup TP/SL check: ${error.message}`, 'error');
+        }
+    }
+}
+
 async function setSafeTPSL(symbol, position) {
     // Acquire lock to prevent race conditions
     if (orderLocks.has(symbol)) {
@@ -1847,6 +1930,10 @@ async function main() {
         if (process.env.USE_SET_LEVERAGE.toLowerCase() == "true") {
             await setLeverage(pairs, process.env.LEVERAGE);
         }
+
+        // Check and set TP/SL for existing positions
+        console.log("Performing startup TP/SL check...");
+        await checkAndSetMissingTPSL();
 
         // Send startup report notification
         if (process.env.USE_DISCORD == "true") {
