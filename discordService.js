@@ -25,8 +25,8 @@ class DiscordService {
             const counterDirection = isBuy ? "SHORT" : "LONG";
             
             const embed = new EmbedBuilder()
-                .setTitle(`${emoji} NEW LIQUIDATION TRADE ${emoji}`)
-                .setDescription(`**${symbol}** - ${direction} Position`)
+                .setTitle(`${emoji} NEW TRADE ${emoji}`)
+                .setDescription(`**${symbol}** - ${counterDirection} Liquidation → ${direction} Entry`)
                 .setColor(color)
                 .addFields(
                     { name: '📊 Symbol', value: `\`${symbol}\``, inline: true },

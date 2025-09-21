@@ -118,7 +118,7 @@ async function initializeConfigFiles() {
             const defaultSettings = {
                 pairs: [
                     {
-                        name: "BTCUSDT",
+                        symbol: "BTCUSDT",
                         leverage: 5,
                         orderSize: 0.02,
                         tp: 3,
@@ -1671,10 +1671,10 @@ async function updateSettings() {
                         }
                     }
                     fs.writeFileSync('settings.json', JSON.stringify(settingsFile, null, 4));
+                    console.log(chalk.green("Settings updated successfully with fresh API data"));
                     //if error load research.json file and update settings.json file
                 }).catch(
                     err => {
-                        console.log(chalk.red("Research API down. Attempting to load research.json file, if this continues please contact @Crypt0gnoe or @Atsutane in Discord"));
                         const researchFile = readResearchFile();
                         if (researchFile && researchFile.data) {
                             console.log(chalk.yellow("Using existing research.json data to update settings"));
@@ -1707,6 +1707,7 @@ async function updateSettings() {
                                 }
                             }
                             fs.writeFileSync('settings.json', JSON.stringify(settingsFile, null, 4));
+                            console.log(chalk.green("Settings updated successfully with cached research data"));
                         } else {
                             console.log(chalk.red("No research data available. Cannot update settings."));
                         }
