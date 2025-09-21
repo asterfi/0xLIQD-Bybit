@@ -536,7 +536,7 @@ async function takeProfit(symbol, position) {
     }
 
     // Check if positions has avgPrice (direct from API) or entryPrice (from getPosition function)
-    var entryPrice = positions.avgPrice || positions.entry_price;
+    var entryPrice = positions.avgPrice || positions.entry_price || positions.entryPrice;
 
     // Validate position data
     if (!positions || !entryPrice || isNaN(entryPrice) || entryPrice <= 0) {
@@ -549,7 +549,7 @@ async function takeProfit(symbol, position) {
     // Ensure entryPrice is properly converted to number
     entryPrice = parseFloat(entryPrice);
     if (isNaN(entryPrice) || entryPrice <= 0) {
-        logIT(`Invalid entry price conversion for ${symbol}. Entry price: ${entryPrice}`, LOG_LEVEL.ERROR);
+        logIT(`Invalid entry price conversion for ${symbol}. Entry price: ${entryPrice}, Type: ${typeof entryPrice}`, LOG_LEVEL.ERROR);
         return;
     }
 
