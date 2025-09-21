@@ -238,7 +238,7 @@ wsClient.on('update', (data) => {
 
         // Initialize new liquidation entry if not exists
         if (index === -1) {
-            liquidationOrders.push({pair, price, side, qty, amount: 1, timestamp});
+            liquidationOrders.push({ pair, price, side, qty, amount: 1, timestamp });
             index = liquidationOrders.findIndex(x => x.pair === pair);
         }
 
@@ -500,17 +500,17 @@ async function takeProfit(symbol, position) {
 
     // Parse and validate environment variables
     const takeProfitPercent = parseFloat(process.env.TAKE_PROFIT_PERCENT);
-    
+
     if (isNaN(takeProfitPercent) || takeProfitPercent <= 0) {
         logIT(`Invalid take profit percentage for ${symbol}. Take profit: ${takeProfitPercent}%`, LOG_LEVEL.ERROR);
         return;
     }
-    
+
     // Check if stop loss should be used
     const useStopLoss = process.env.USE_STOPLOSS.toLowerCase() === "true";
     var stopLoss = null;
     var stopLossPercent = null;
-    
+
     if (useStopLoss) {
         stopLossPercent = parseFloat(process.env.STOP_LOSS_PERCENT);
         if (isNaN(stopLossPercent) || stopLossPercent <= 0) {
@@ -518,20 +518,20 @@ async function takeProfit(symbol, position) {
             return;
         }
     }
-    
+
     if (positions.side === "Buy") {
         var side = "Buy";
-        var takeProfit = positions.entry_price + (positions.entry_price * (takeProfitPercent/100));
+        var takeProfit = positions.entry_price + (positions.entry_price * (takeProfitPercent / 100));
         if (useStopLoss) {
-            var stopLoss = positions.entry_price - (positions.entry_price * (stopLossPercent/100));
+            var stopLoss = positions.entry_price - (positions.entry_price * (stopLossPercent / 100));
         }
 
     }
     else {
         var side = "Sell";
-        var takeProfit = positions.entry_price - (positions.entry_price * (takeProfitPercent/100));
+        var takeProfit = positions.entry_price - (positions.entry_price * (takeProfitPercent / 100));
         if (useStopLoss) {
-            var stopLoss = positions.entry_price + (positions.entry_price * (stopLossPercent/100));
+            var stopLoss = positions.entry_price + (positions.entry_price * (stopLossPercent / 100));
         }
     }
 
@@ -555,13 +555,13 @@ async function takeProfit(symbol, position) {
         var decimalPlaces = (tickSize.toString().split(".")[1] || []).length;
 
         if (positions.size > 0 && positions.take_profit === 0 || takeProfit !== positions.take_profit) {
-            if(process.env.USE_STOPLOSS.toLowerCase() === "true") {
+            if (process.env.USE_STOPLOSS.toLowerCase() === "true") {
                 // Format prices as strings with correct decimal places
                 const takeProfitStr = takeProfit.toFixed(decimalPlaces);
                 const stopLossStr = stopLoss.toFixed(decimalPlaces);
-                
+
                 logIT(`Setting take profit for ${symbol}: ${takeProfitStr}, stop loss: ${stopLossStr}`, LOG_LEVEL.INFO);
-                
+
                 const order = await restClient.setTradingStop({
                     category: 'linear',
                     symbol: symbol,
@@ -602,17 +602,17 @@ async function takeProfit(symbol, position) {
             else {
                 // Format take profit as string with correct decimal places
                 const takeProfitStr = takeProfit.toFixed(decimalPlaces);
-                
+
                 logIT(`Setting take profit for ${symbol}: ${takeProfitStr}`, LOG_LEVEL.INFO);
-                
+
                 const order = await restClient.setTradingStop({
                     category: 'linear',
                     symbol: symbol,
                     takeProfit: takeProfitStr,
                     positionIdx: positionIdx
                 });
-                //console.log(JSON.stringify(order, null, 2));
-                if(order.retMsg === "OK" || order.retMsg === "not modified" || order.retCode === 130024) {
+                
+                if (order.retMsg === "OK" || order.retMsg === "not modified" || order.retCode === 130024) {
                     //console.log(chalk.red("TAKE PROFIT ERROR: ", JSON.stringify(order, null, 2)));
                 }
                 else if (order.retCode === 130027 || order.retCode === 130030) {
@@ -654,7 +654,7 @@ async function takeProfit(symbol, position) {
 }
 //fetch how how openPositions there are
 async function totalOpenPositions() {
-    try{
+    try {
         var positions = await restClient.getPositionInfo({ category: 'linear', settleCoin: 'USDT' });
         var open = 0;
         if (positions.result && positions.result.list) {
@@ -717,8 +717,8 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
             const settings = await JSON.parse(fs.readFileSync('settings.json', 'utf8'));
             var settingsIndex = await settings.pairs.findIndex(x => x.symbol === pair);
 
-            if(settingsIndex !== -1) {
-                if (liquidationOrders[index].price < settings.pairs[settingsIndex].long_price)  {
+            if (settingsIndex !== -1) {
+                if (liquidationOrders[index].price < settings.pairs[settingsIndex].long_price) {
                     //see if we have an open position
                     var position = await getPosition(pair, "Buy");
 
@@ -748,21 +748,21 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
 
                         const positionIdx = isHedgeMode() ? 1 : 0; // 1 for hedge Buy, 0 for one-way
                         const order = await createMarketOrder(restClient, pair, "Buy", orderQty, positionIdx);
-                        
+
                         // Check if order was successful
                         if (order.retCode === 0 && order.result) {
                             logIT(`New Long Order Placed for ${pair} at ${settings.pairs[settingsIndex].order_size} size`, LOG_LEVEL.INFO);
-                            if(process.env.USE_DISCORD == "true") {
+                            if (process.env.USE_DISCORD == "true") {
                                 orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Buy", position.size, position.percentGain, trigger_qty);
                             }
                         } else {
                             logIT(`Failed to place Long Order for ${pair}: ${order.retMsg} (Error Code: ${order.retCode})`, LOG_LEVEL.ERROR);
-                            if(process.env.USE_DISCORD == "true") {
+                            if (process.env.USE_DISCORD == "true") {
                                 messageWebhook("Failed to place Long Order for " + pair + ": " + order.retMsg);
                             }
                         }
-         
-        
+
+
                     }
                     //existing position (size > 0) - only DCA, don't enter new trade
                     else if (position.size > 0 && process.env.USE_DCA_FEATURE == "true") {
@@ -801,11 +801,11 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                                 logIT(`DCA Order parameters: ${JSON.stringify(orderParams, null, 2)}`, LOG_LEVEL.DEBUG);
 
                                 const order = await createMarketOrder(restClient, pair, "Buy", orderQty, positionIdx);
-                                
+
                                 // Check if order was successful
                                 if (order.retCode === 0 && order.result) {
                                     console.log(chalk.bgGreenBright("Long DCA Order Placed for " + pair + " at " + settings.pairs[settingsIndex].order_size + " size"));
-                                    if(process.env.USE_DISCORD == "true") {
+                                    if (process.env.USE_DISCORD == "true") {
                                         orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Buy", position.size, position.percentGain, trigger_qty);
                                     }
 
@@ -823,7 +823,7 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                                     }, 500); // Small delay to ensure DCA order is filled
                                 } else {
                                     console.log(chalk.redBright("Failed to place Long DCA Order for " + pair + ": " + order.retMsg + " (Error Code: " + order.retCode + ")"));
-                                    if(process.env.USE_DISCORD == "true") {
+                                    if (process.env.USE_DISCORD == "true") {
                                         messageWebhook("Failed to place Long DCA Order for " + pair + ": " + order.retMsg);
                                     }
                                 }
@@ -832,7 +832,7 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                                 //max position size reached
                                 console.log("Max position size reached for " + pair);
                                 messageWebhook("Max position size reached for " + pair);
-                                
+
                             }
                         }
                         else {
@@ -849,15 +849,15 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                 }
             }
             else {
-                console.log(chalk.bgRedBright( pair + " does not exist in settings.json"));
+                console.log(chalk.bgRedBright(pair + " does not exist in settings.json"));
             }
 
         }
         else {
             const settings = await JSON.parse(fs.readFileSync('settings.json', 'utf8'));
             var settingsIndex = await settings.pairs.findIndex(x => x.symbol === pair);
-            if(settingsIndex !== -1) {
-                if (liquidationOrders[index].price > settings.pairs[settingsIndex].short_price)  {
+            if (settingsIndex !== -1) {
+                if (liquidationOrders[index].price > settings.pairs[settingsIndex].short_price) {
                     var position = await getPosition(pair, "Sell");
 
                     //position.size should never be null now with the improved getPosition function
@@ -883,16 +883,16 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
 
                         const positionIdx = isHedgeMode() ? 2 : 0; // 2 for hedge Sell, 0 for one-way
                         const order = await createMarketOrder(restClient, pair, "Sell", orderQty, positionIdx);
-                        
+
                         // Check if order was successful
                         if (order.retCode === 0 && order.result) {
                             logIT(`New Short Order Placed for ${pair} at ${settings.pairs[settingsIndex].order_size} size`, LOG_LEVEL.INFO);
-                            if(process.env.USE_DISCORD == "true") {
+                            if (process.env.USE_DISCORD == "true") {
                                 orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Sell", position.size, position.percentGain, trigger_qty);
                             }
                         } else {
                             logIT(`Failed to place Short Order for ${pair}: ${order.retMsg} (Error Code: ${order.retCode})`, LOG_LEVEL.ERROR);
-                            if(process.env.USE_DISCORD == "true") {
+                            if (process.env.USE_DISCORD == "true") {
                                 messageWebhook("Failed to place Short Order for " + pair + ": " + order.retMsg);
                             }
                         }
@@ -934,11 +934,11 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                                 logIT(`DCA Order parameters: ${JSON.stringify(orderParams, null, 2)}`, LOG_LEVEL.DEBUG);
 
                                 const order = await createMarketOrder(restClient, pair, "Sell", orderQty, positionIdx);
-                                
+
                                 // Check if order was successful
                                 if (order.retCode === 0 && order.result) {
                                     console.log(chalk.bgRedBright("Short DCA Order Placed for " + pair + " at " + settings.pairs[settingsIndex].order_size + " size"));
-                                    if(process.env.USE_DISCORD == "true") {
+                                    if (process.env.USE_DISCORD == "true") {
                                         orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Sell", position.size, position.percentGain, trigger_qty);
                                     }
 
@@ -956,7 +956,7 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                                     }, 500); // Small delay to ensure DCA order is filled
                                 } else {
                                     console.log(chalk.redBright("Failed to place Short DCA Order for " + pair + ": " + order.retMsg + " (Error Code: " + order.retCode + ")"));
-                                    if(process.env.USE_DISCORD == "true") {
+                                    if (process.env.USE_DISCORD == "true") {
                                         messageWebhook("Failed to place Short DCA Order for " + pair + ": " + order.retMsg);
                                     }
                                 }
@@ -1004,7 +1004,7 @@ async function setLeverage(pairs, leverage) {
                 sellLeverage: leverage,
             }
         );
-        try{
+        try {
             var maxLeverage = await checkLeverage(pair);
             if (maxLeverage >= parseFloat(leverage)) {
                 logIT(`Leverage for ${pair} is set to ${leverage}`, LOG_LEVEL.INFO);
@@ -1014,12 +1014,12 @@ async function setLeverage(pairs, leverage) {
                 //remove pair from settings.json
                 const settings = JSON.parse(fs.readFileSync('settings.json', 'utf8'));
                 var settingsIndex = settings.pairs.findIndex(x => x.symbol === pair);
-                if(settingsIndex !== -1) {
+                if (settingsIndex !== -1) {
                     settings.pairs.splice(settingsIndex, 1);
                     fs.writeFileSync('settings.json', JSON.stringify(settings, null, 2));
                 }
             }
-            
+
 
 
         }
@@ -1096,7 +1096,7 @@ async function checkLeverage(symbol) {
 async function checkOpenPositions() {
     //get all positions
     var positions = await restClient.getPositionInfo({ category: 'linear', settleCoin: 'USDT' });
-    
+
     //console.log("Positions: " + JSON.stringify(positions, null, 2));
     var totalPositions = 0;
     var postionList = [];
@@ -1104,9 +1104,9 @@ async function checkOpenPositions() {
         for (var i = 0; i < positions.result.list.length; i++) {
             if (positions.result.list[i].size > 0) {
                 //console.log("Open Position for " + positions.result.list[i].symbol + " with size " + positions.result.list[i].size + " and side " + positions.result.list[i].side + " and pnl " + positions.result.list[i].unrealisedPnl);
-               
+
                 await setSafeTPSL(positions.result.list[i].symbol, positions.result.list[i]);
-   
+
                 // Convert API position to our position structure
                 const positionObj = {
                     symbol: positions.result.list[i].symbol,
@@ -1131,7 +1131,7 @@ async function checkOpenPositions() {
                     pnl: structuredPosition.pnl
                 }
                 postionList.push(position);
-                
+
             }
         }
     }
@@ -1147,11 +1147,6 @@ async function checkOpenPositions() {
 
 async function getMinTradingSize() {
     const instruments = await restClient.getInstrumentsInfo({ category: 'linear' });
-    // console.log(instruments.result.list);
-
-    // const url = "https://api.bybit.com/v5/market/instruments-info?category=linear";
-    // const response = await fetch(url);
-    // const data = await response.json();
 
     var balance = await getBalance();
 
@@ -1170,10 +1165,8 @@ async function getMinTradingSize() {
             var price = priceFetch.lastPrice;
             //get usd value of min order size
             var usdValue = (minOrderSize * price);
-            //console.log("USD value of " + instruments.result.list[i].symbol + " is " + usdValue);
             //find usd valie of process.env.MIN_ORDER_SIZE
-            var minOrderSizeUSD = (balance * process.env.PERCENT_ORDER_SIZE/100) * process.env.LEVERAGE;
-            //console.log("USD value of " + process.env.PERCENT_ORDER_SIZE + " is " + minOrderSizeUSD);
+            var minOrderSizeUSD = (balance * process.env.PERCENT_ORDER_SIZE / 100) * process.env.LEVERAGE;
             if (minOrderSizeUSD < usdValue) {
                 //use min order size
                 var minOrderSizePair = minOrderSize;
@@ -1182,33 +1175,21 @@ async function getMinTradingSize() {
                 //convert min orderSizeUSD to pair value
                 var minOrderSizePair = (minOrderSizeUSD / price);
             }
-            try{
+            try {
                 //find pair in positions
                 var position = positions.result.list.find(x => x.symbol === instruments.result.list[i].symbol);
-                // var leverage = position.leverage;
-        
-                // if (position) {
-                    //find max position size for pair
-                    var maxPositionSize = ((balance * (process.env.MAX_POSITION_SIZE_PERCENT/100)) / price) * process.env.LEVERAGE;
-                    //save min order size and max position size to json
-                    var minOrderSizeJson = {
-                        "pair": instruments.result.list[i].symbol,
-                        "minOrderSize": minOrderSizePair,
-                        "maxPositionSize": maxPositionSize,
-                        "tickSize": instruments.result.list[i].priceFilter.tickSize,
-                    }
-                    //add to array
-                    minOrderSizes.push(minOrderSizeJson);
 
-                // }
-                // else {
-                //     const settings = JSON.parse(fs.readFileSync('settings.json', 'utf8'));
-                //     var settingsIndex = settings.pairs.findIndex(x => x.symbol === instruments.result.list[i].symbol);
-                //     if(settingsIndex !== -1) {
-                //         settings.pairs.splice(settingsIndex, 1);
-                //         fs.writeFileSync('settings.json', JSON.stringify(settings, null, 2));
-                //     }
-                // }
+                //find max position size for pair
+                var maxPositionSize = ((balance * (process.env.MAX_POSITION_SIZE_PERCENT / 100)) / price) * process.env.LEVERAGE;
+                //save min order size and max position size to json
+                var minOrderSizeJson = {
+                    "pair": instruments.result.list[i].symbol,
+                    "minOrderSize": minOrderSizePair,
+                    "maxPositionSize": maxPositionSize,
+                    "tickSize": instruments.result.list[i].priceFilter.tickSize,
+                }
+                //add to array
+                minOrderSizes.push(minOrderSizeJson);
             }
             catch (e) {
                 // console.log(e);
@@ -1223,10 +1204,10 @@ async function getMinTradingSize() {
         const settings = JSON.parse(fs.readFileSync('settings.json', 'utf8'));
         for (var i = 0; i < minOrderSizes.length; i++) {
             var settingsIndex = settings.pairs.findIndex(x => x.symbol === minOrderSizes[i].pair);
-            if(settingsIndex !== -1) {
+            if (settingsIndex !== -1) {
                 settings.pairs[settingsIndex].order_size = minOrderSizes[i].minOrderSize;
                 settings.pairs[settingsIndex].max_position_size = minOrderSizes[i].maxPositionSize;
-                
+
             }
         }
     }
@@ -1237,7 +1218,7 @@ async function getMinTradingSize() {
 }
 //get all symbols
 async function getSymbols() {
-    try{
+    try {
         const TOPIC_NAME = 'allLiquidation';
 
         const allSymbolsV5ResultLinear = await restClient.getTickers({
@@ -1254,7 +1235,7 @@ async function getSymbols() {
 
         return allLinearTopics;
     }
-    catch{
+    catch {
         logIT("Error fetching symbols", LOG_LEVEL.ERROR);
         return null;
     }
@@ -1287,126 +1268,56 @@ async function createSettings() {
         "X-RapidAPI-Host": "liquidation-report.p.rapidapi.com"
     };
     fetch(url, { headers: headers })
-    .then(res => res.json())
-    .then((out) => {
-        // Validate data structure before saving
-        if (out && out.data && Array.isArray(out.data)) {
-            // Validate each data item has required fields
-            const validData = out.data.filter(item =>
-                item &&
-                item.name &&
-                !isNaN(item.long_price) &&
-                !isNaN(item.short_price) &&
-                item.long_price > 0 &&
-                item.short_price > 0
-            );
-            
-            if (validData.length > 0) {
-                // Save only valid data to research.json
-                const validatedOut = { ...out, data: validData };
-                fs.writeFileSync('research.json', JSON.stringify(validatedOut, null, 4));
-                console.log(chalk.green(`Research data saved successfully. Validated ${validData.length} out of ${out.data.length} items.`));
+        .then(res => res.json())
+        .then((out) => {
+            // Validate data structure before saving
+            if (out && out.data && Array.isArray(out.data)) {
+                // Validate each data item has required fields
+                const validData = out.data.filter(item =>
+                    item &&
+                    item.name &&
+                    !isNaN(item.long_price) &&
+                    !isNaN(item.short_price) &&
+                    item.long_price > 0 &&
+                    item.short_price > 0
+                );
+
+                if (validData.length > 0) {
+                    // Save only valid data to research.json
+                    const validatedOut = { ...out, data: validData };
+                    fs.writeFileSync('research.json', JSON.stringify(validatedOut, null, 4));
+                    console.log(chalk.green(`Research data saved successfully. Validated ${validData.length} out of ${out.data.length} items.`));
+                } else {
+                    logIT("No valid research data items found after validation", LOG_LEVEL.ERROR);
+                }
             } else {
-                logIT("No valid research data items found after validation", LOG_LEVEL.ERROR);
+                logIT("Invalid research data structure received from API", LOG_LEVEL.ERROR);
             }
-        } else {
-            logIT("Invalid research data structure received from API", LOG_LEVEL.ERROR);
-        }
-        
-        //create settings.json file with multiple pairs
-        var settings = {};
-        settings["pairs"] = [];
-        for (var i = 0; i < out.data.length; i++) {
-            //console.log("Adding Smart Settings for " + out.data[i].name + " to settings.json");
-            //if name contains 1000 or does not end in USDT, skip
-            if (out.data[i].name.includes("1000")) {
-                continue;
-            }
-            else {
-                //find index of pair in min_order_sizes.json "pair" key
-                var index = minOrderSizes.findIndex(x => x.pair === out.data[i].name + "USDT");
-                if (index === -1) {
-                    continue;
-                }
-                else {
-                    // Calculate risk-adjusted prices using utility function
-                    const riskLevel = parseInt(process.env.RISK_LEVEL) || 2;
-                    const riskPrices = calculateRiskPrices(out.data[i].long_price, out.data[i].short_price, riskLevel);
-                    const long_risk = riskPrices.long_risk;
-                    const short_risk = riskPrices.short_risk;
 
-                    var pair = {
-                        "symbol": out.data[i].name + "USDT",
-                        "leverage": process.env.LEVERAGE,
-                        "min_volume": out.data[i].liq_volume,
-                        "take_profit": process.env.TAKE_PROFIT_PERCENT,
-                        "stop_loss": process.env.STOP_LOSS_PERCENT,
-                        "order_size": minOrderSizes[index].minOrderSize,
-                        "max_position_size": minOrderSizes[index].maxPositionSize,
-                        "long_price": long_risk,
-                        "short_price": short_risk
-                    }
-                    settings["pairs"].push(pair);
-                }
-            }
-        }
-        fs.writeFileSync('settings.json', JSON.stringify(settings, null, 4));
-
-    }).catch(err => {
-        logIT(`Error fetching research data: ${err}`, LOG_LEVEL.ERROR);
-        // Try to use existing research.json if available
-        const researchFile = readResearchFile();
-        if (researchFile && researchFile.data) {
-            logIT("Using existing research.json data to create settings", LOG_LEVEL.INFO);
+            //create settings.json file with multiple pairs
             var settings = {};
             settings["pairs"] = [];
-            for (var i = 0; i < researchFile.data.length; i++) {
-                //console.log("Adding Smart Settings for " + researchFile.data[i].name + " to settings.json");
+            for (var i = 0; i < out.data.length; i++) {
+                //console.log("Adding Smart Settings for " + out.data[i].name + " to settings.json");
                 //if name contains 1000 or does not end in USDT, skip
-                if (researchFile.data[i].name.includes("1000")) {
+                if (out.data[i].name.includes("1000")) {
                     continue;
                 }
                 else {
                     //find index of pair in min_order_sizes.json "pair" key
-                    var index = minOrderSizes.findIndex(x => x.pair === researchFile.data[i].name + "USDT");
+                    var index = minOrderSizes.findIndex(x => x.pair === out.data[i].name + "USDT");
                     if (index === -1) {
                         continue;
                     }
                     else {
-                        //risk level
-                        var riskLevel = process.env.RISK_LEVEL;
-                        if (riskLevel == 1) {
-                            //add 0.5% to long_price and subtract 0.5% from short_price
-                            var long_risk = researchFile.data[i].long_price * 1.005
-                            var short_risk = researchFile.data[i].short_price * 0.995
-                        }
-                        else if (riskLevel == 2) {
-                            //calculate price 1% below current price and1% above current price
-                            var long_risk = researchFile.data[i].long_price * 1.01
-                            var short_risk = researchFile.data[i].short_price * 0.99
-                        }
-                        else if (riskLevel == 3) {
-                            //calculate price 2% below current price and 2% above current price
-                            var long_risk = researchFile.data[i].long_price * 1.02
-                            var short_risk = researchFile.data[i].short_price * 0.98
-                        }
-                        else if (riskLevel == 4) {
-                            //calculate price 3% below current price and 3% above current price
-                            var long_risk = researchFile.data[i].long_price * 1.03
-                            var short_risk = researchFile.data[i].short_price * 0.97
-                        }
-                        else if (riskLevel == 5) {
-                            //calculate price 4% below current price and 4% above current price
-                            var long_risk = researchFile.data[i].long_price * 1.04
-                            var short_risk = researchFile.data[i].short_price * 0.96
-                        }
-                        else {
-                            var long_risk = researchFile.data[i].long_price;
-                            var short_risk = researchFile.data[i].short_price;
-                        }
+                        // Calculate risk-adjusted prices using utility function
+                        const riskLevel = parseInt(process.env.RISK_LEVEL) || 2;
+                        const riskPrices = calculateRiskPrices(out.data[i].long_price, out.data[i].short_price, riskLevel);
+                        const long_risk = riskPrices.long_risk;
+                        const short_risk = riskPrices.short_risk;
 
                         var pair = {
-                            "symbol": researchFile.data[i].name + "USDT",
+                            "symbol": out.data[i].name + "USDT",
                             "leverage": process.env.LEVERAGE,
                             "min_volume": out.data[i].liq_volume,
                             "take_profit": process.env.TAKE_PROFIT_PERCENT,
@@ -1421,10 +1332,80 @@ async function createSettings() {
                 }
             }
             fs.writeFileSync('settings.json', JSON.stringify(settings, null, 4));
-        } else {
-            console.log(chalk.red("No research data available. Cannot create settings."));
-        }
-    });
+
+        }).catch(err => {
+            logIT(`Error fetching research data: ${err}`, LOG_LEVEL.ERROR);
+            // Try to use existing research.json if available
+            const researchFile = readResearchFile();
+            if (researchFile && researchFile.data) {
+                logIT("Using existing research.json data to create settings", LOG_LEVEL.INFO);
+                var settings = {};
+                settings["pairs"] = [];
+                for (var i = 0; i < researchFile.data.length; i++) {
+                    //console.log("Adding Smart Settings for " + researchFile.data[i].name + " to settings.json");
+                    //if name contains 1000 or does not end in USDT, skip
+                    if (researchFile.data[i].name.includes("1000")) {
+                        continue;
+                    }
+                    else {
+                        //find index of pair in min_order_sizes.json "pair" key
+                        var index = minOrderSizes.findIndex(x => x.pair === researchFile.data[i].name + "USDT");
+                        if (index === -1) {
+                            continue;
+                        }
+                        else {
+                            //risk level
+                            var riskLevel = process.env.RISK_LEVEL;
+                            if (riskLevel == 1) {
+                                //add 0.5% to long_price and subtract 0.5% from short_price
+                                var long_risk = researchFile.data[i].long_price * 1.005
+                                var short_risk = researchFile.data[i].short_price * 0.995
+                            }
+                            else if (riskLevel == 2) {
+                                //calculate price 1% below current price and1% above current price
+                                var long_risk = researchFile.data[i].long_price * 1.01
+                                var short_risk = researchFile.data[i].short_price * 0.99
+                            }
+                            else if (riskLevel == 3) {
+                                //calculate price 2% below current price and 2% above current price
+                                var long_risk = researchFile.data[i].long_price * 1.02
+                                var short_risk = researchFile.data[i].short_price * 0.98
+                            }
+                            else if (riskLevel == 4) {
+                                //calculate price 3% below current price and 3% above current price
+                                var long_risk = researchFile.data[i].long_price * 1.03
+                                var short_risk = researchFile.data[i].short_price * 0.97
+                            }
+                            else if (riskLevel == 5) {
+                                //calculate price 4% below current price and 4% above current price
+                                var long_risk = researchFile.data[i].long_price * 1.04
+                                var short_risk = researchFile.data[i].short_price * 0.96
+                            }
+                            else {
+                                var long_risk = researchFile.data[i].long_price;
+                                var short_risk = researchFile.data[i].short_price;
+                            }
+
+                            var pair = {
+                                "symbol": researchFile.data[i].name + "USDT",
+                                "leverage": process.env.LEVERAGE,
+                                "min_volume": out.data[i].liq_volume,
+                                "take_profit": process.env.TAKE_PROFIT_PERCENT,
+                                "stop_loss": process.env.STOP_LOSS_PERCENT,
+                                "order_size": minOrderSizes[index].minOrderSize,
+                                "max_position_size": minOrderSizes[index].maxPositionSize,
+                                "long_price": long_risk,
+                                "short_price": short_risk
+                            }
+                            settings["pairs"].push(pair);
+                        }
+                    }
+                }
+                fs.writeFileSync('settings.json', JSON.stringify(settings, null, 4));
+            } else {
+                console.log(chalk.red("No research data available. Cannot create settings."));
+            }
+        });
 }
 //update settings.json file with long_price and short_price
 
@@ -1441,7 +1422,7 @@ async function updateSettings() {
         }
         else {
             lastUpdate = Date.now();
-            if(process.env.UPDATE_MIN_ORDER_SIZING == "true") {
+            if (process.env.UPDATE_MIN_ORDER_SIZING == "true") {
                 await getMinTradingSize();
             }
             var minOrderSizes = JSON.parse(fs.readFileSync('min_order_sizes.json'));
@@ -1452,94 +1433,94 @@ async function updateSettings() {
                 "X-RapidAPI-Host": "liquidation-report.p.rapidapi.com"
             };
             fetch(url, { headers: headers })
-            .then(res => res.json())
-            .then((out) => {
-                // Validate data structure before saving
-                if (out && out.data && Array.isArray(out.data)) {
-                    // Validate each data item has required fields
-                    const validData = out.data.filter(item =>
-                        item &&
-                        item.name &&
-                        !isNaN(item.long_price) &&
-                        !isNaN(item.short_price) &&
-                        item.long_price > 0 &&
-                        item.short_price > 0
-                    );
-                    
-                    if (validData.length > 0) {
-                        // Save only valid data to research.json
-                        const validatedOut = { ...out, data: validData };
-                        fs.writeFileSync('research.json', JSON.stringify(validatedOut, null, 4));
-                        console.log(chalk.green(`Research data saved successfully. Validated ${validData.length} out of ${out.data.length} items.`));
-                    } else {
-                        logIT("No valid research data items found after validation", LOG_LEVEL.ERROR);
-                    }
-                } else {
-                    logIT("Invalid research data structure received from API", LOG_LEVEL.ERROR);
-                }
-                var settings = {};
-                settings["pairs"] = [];
-                for (var i = 0; i < out.data.length; i++) {
-                    //find index of pair in min_order_sizes.json "pair" key
-                    var index = minOrderSizes.findIndex(x => x.pair === out.data[i].name + "USDT");
-                    var settingsIndex = settingsFile.pairs.findIndex(x => x.symbol === out.data[i].name + "USDT");
-                    if (index === -1 || settingsIndex === 'undefined' || out.data[i].name.includes("1000")) {
-                        //console.log("Skipping " + out.data[i].name + "USDT");
-                    }
-                    else {
-                        // Calculate risk-adjusted prices using utility function
-                        const riskLevel = parseInt(process.env.RISK_LEVEL) || 2;
-                        const riskPrices = calculateRiskPrices(out.data[i].long_price, out.data[i].short_price, riskLevel);
-                        const long_risk = riskPrices.long_risk;
-                        const short_risk = riskPrices.short_risk;
+                .then(res => res.json())
+                .then((out) => {
+                    // Validate data structure before saving
+                    if (out && out.data && Array.isArray(out.data)) {
+                        // Validate each data item has required fields
+                        const validData = out.data.filter(item =>
+                            item &&
+                            item.name &&
+                            !isNaN(item.long_price) &&
+                            !isNaN(item.short_price) &&
+                            item.long_price > 0 &&
+                            item.short_price > 0
+                        );
 
-                        // Update settings.json file
-                        settingsFile.pairs[settingsIndex].long_price = long_risk;
-                        settingsFile.pairs[settingsIndex].short_price = short_risk;
-                    }
-                }
-                fs.writeFileSync('settings.json', JSON.stringify(settingsFile, null, 4));
-            //if error load research.json file and update settings.json file
-            }).catch(
-                err => {
-                    console.log(chalk.red("Research API down. Attempting to load research.json file, if this continues please contact @Crypt0gnoe or @Atsutane in Discord"));
-                    const researchFile = readResearchFile();
-                    if (researchFile && researchFile.data) {
-                        console.log(chalk.yellow("Using existing research.json data to update settings"));
-                        var minOrderSizes = JSON.parse(fs.readFileSync('min_order_sizes.json'));
-                        var settingsFile = JSON.parse(fs.readFileSync('settings.json'));
-                        var settings = {};
-                        settings["pairs"] = [];
-                        for (var i = 0; i < researchFile.data.length; i++) {
-                            //find index of pair in min_order_sizes.json "pair" key
-                            var index = minOrderSizes.findIndex(x => x.pair === researchFile.data[i].name + "USDT");
-                            var settingsIndex = settingsFile.pairs.findIndex(x => x.symbol === researchFile.data[i].name + "USDT");
-                            try{
-                                if (index === -1 || settingsIndex === 'undefined' || researchFile.data[i].name.includes("1000")) {
-                                    //console.log("Skipping " + researchFile.data[i].name + "USDT");
-                                }
-                                else {
-                                    // Calculate risk-adjusted prices using utility function
-                                    const riskLevel = parseInt(process.env.RISK_LEVEL) || 2;
-                                    const riskPrices = calculateRiskPrices(researchFile.data[i].long_price, researchFile.data[i].short_price, riskLevel);
-                                    const long_risk = riskPrices.long_risk;
-                                    const short_risk = riskPrices.short_risk;
-
-                                    // Update settings.json file
-                                    settingsFile.pairs[settingsIndex].long_price = long_risk;
-                                    settingsFile.pairs[settingsIndex].short_price = short_risk;
-                                }
-                            }
-                            catch(err){
-                                console.log("Error updating " + researchFile.data[i].name + "USDT, this is likely due to not having this pair active in your settings.json file");
-                            }
+                        if (validData.length > 0) {
+                            // Save only valid data to research.json
+                            const validatedOut = { ...out, data: validData };
+                            fs.writeFileSync('research.json', JSON.stringify(validatedOut, null, 4));
+                            console.log(chalk.green(`Research data saved successfully. Validated ${validData.length} out of ${out.data.length} items.`));
+                        } else {
+                            logIT("No valid research data items found after validation", LOG_LEVEL.ERROR);
                         }
-                        fs.writeFileSync('settings.json', JSON.stringify(settingsFile, null, 4));
                     } else {
-                        console.log(chalk.red("No research data available. Cannot update settings."));
+                        logIT("Invalid research data structure received from API", LOG_LEVEL.ERROR);
                     }
-                }
-            );
+                    var settings = {};
+                    settings["pairs"] = [];
+                    for (var i = 0; i < out.data.length; i++) {
+                        //find index of pair in min_order_sizes.json "pair" key
+                        var index = minOrderSizes.findIndex(x => x.pair === out.data[i].name + "USDT");
+                        var settingsIndex = settingsFile.pairs.findIndex(x => x.symbol === out.data[i].name + "USDT");
+                        if (index === -1 || settingsIndex === 'undefined' || out.data[i].name.includes("1000")) {
+                            //console.log("Skipping " + out.data[i].name + "USDT");
+                        }
+                        else {
+                            // Calculate risk-adjusted prices using utility function
+                            const riskLevel = parseInt(process.env.RISK_LEVEL) || 2;
+                            const riskPrices = calculateRiskPrices(out.data[i].long_price, out.data[i].short_price, riskLevel);
+                            const long_risk = riskPrices.long_risk;
+                            const short_risk = riskPrices.short_risk;
+
+                            // Update settings.json file
+                            settingsFile.pairs[settingsIndex].long_price = long_risk;
+                            settingsFile.pairs[settingsIndex].short_price = short_risk;
+                        }
+                    }
+                    fs.writeFileSync('settings.json', JSON.stringify(settingsFile, null, 4));
+                    //if error load research.json file and update settings.json file
+                }).catch(
+                    err => {
+                        console.log(chalk.red("Research API down. Attempting to load research.json file, if this continues please contact @Crypt0gnoe or @Atsutane in Discord"));
+                        const researchFile = readResearchFile();
+                        if (researchFile && researchFile.data) {
+                            console.log(chalk.yellow("Using existing research.json data to update settings"));
+                            var minOrderSizes = JSON.parse(fs.readFileSync('min_order_sizes.json'));
+                            var settingsFile = JSON.parse(fs.readFileSync('settings.json'));
+                            var settings = {};
+                            settings["pairs"] = [];
+                            for (var i = 0; i < researchFile.data.length; i++) {
+                                //find index of pair in min_order_sizes.json "pair" key
+                                var index = minOrderSizes.findIndex(x => x.pair === researchFile.data[i].name + "USDT");
+                                var settingsIndex = settingsFile.pairs.findIndex(x => x.symbol === researchFile.data[i].name + "USDT");
+                                try {
+                                    if (index === -1 || settingsIndex === 'undefined' || researchFile.data[i].name.includes("1000")) {
+                                        //console.log("Skipping " + researchFile.data[i].name + "USDT");
+                                    }
+                                    else {
+                                        // Calculate risk-adjusted prices using utility function
+                                        const riskLevel = parseInt(process.env.RISK_LEVEL) || 2;
+                                        const riskPrices = calculateRiskPrices(researchFile.data[i].long_price, researchFile.data[i].short_price, riskLevel);
+                                        const long_risk = riskPrices.long_risk;
+                                        const short_risk = riskPrices.short_risk;
+
+                                        // Update settings.json file
+                                        settingsFile.pairs[settingsIndex].long_price = long_risk;
+                                        settingsFile.pairs[settingsIndex].short_price = short_risk;
+                                    }
+                                }
+                                catch (err) {
+                                    console.log("Error updating " + researchFile.data[i].name + "USDT, this is likely due to not having this pair active in your settings.json file");
+                                }
+                            }
+                            fs.writeFileSync('settings.json', JSON.stringify(settingsFile, null, 4));
+                        } else {
+                            console.log(chalk.red("No research data available. Cannot update settings."));
+                        }
+                    }
+                );
         }
     }
 
@@ -1547,7 +1528,7 @@ async function updateSettings() {
 
 //discord webhook
 function orderWebhook(symbol, amount, side, position, pnl, qty) {
-    if(process.env.USE_DISCORD == "true") {
+    if (process.env.USE_DISCORD == "true") {
         discordService.sendOrderNotification(symbol, amount, side, position, pnl, qty);
     }
 }
@@ -1555,11 +1536,11 @@ function orderWebhook(symbol, amount, side, position, pnl, qty) {
 
 //message webhook
 function messageWebhook(message, type = 'info') {
-    if(process.env.USE_DISCORD == "true") {
+    if (process.env.USE_DISCORD == "true") {
         try {
             discordService.sendMessage(message, type);
         }
-        catch(err){
+        catch (err) {
             console.log(err);
         }
     }
@@ -1567,7 +1548,7 @@ function messageWebhook(message, type = 'info') {
 
 //report webhook
 async function reportWebhook() {
-    if(process.env.USE_DISCORD == "true") {
+    if (process.env.USE_DISCORD == "true") {
         const settings = JSON.parse(fs.readFileSync('account.json', 'utf8'));
         //check if starting balance is set
         if (settings.startingBalance === 0) {
@@ -1595,7 +1576,7 @@ async function reportWebhook() {
         var positions = await restClient.getPositionInfo({ category: 'linear', settleCoin: 'USDT' });
         var positionList = [];
         var openPositions = await totalOpenPositions();
-        if(openPositions === null) {
+        if (openPositions === null) {
             openPositions = 0;
         }
         var marg = await getMargin();
@@ -1604,7 +1585,7 @@ async function reportWebhook() {
         //loop through positions.result.list get open symbols with size > 0 calculate pnl and to array
         for (var i = 0; i < positions.result.list.length; i++) {
             if (positions.result.list[i].size > 0) {
-                
+
                 var pnl1 = positions.result.list[i].unrealisedPnl;
                 var pnl = parseFloat(pnl1).toFixed(6);
                 var symbol = positions.result.list[i].symbol;
@@ -1650,7 +1631,7 @@ async function reportWebhook() {
         }
 
         const uptimeString = times[0].toString() + " days " + times[1].toString() + " hr. " + times[2].toString() + " min. " + times[3].toString() + " sec.";
-        
+
         try {
             await discordService.sendReport(
                 balance,
@@ -1674,7 +1655,7 @@ async function reportWebhook() {
 
 async function main() {
     console.log("Starting 0xLIQD-BYBIT...");
-    try{
+    try {
         pairs = await getSymbols();
 
         //load local file acccount.json with out require and see if "config_set" is true
@@ -1694,7 +1675,7 @@ async function main() {
             }
         }
 
-        if(process.env.UPDATE_MIN_ORDER_SIZING == "true") {
+        if (process.env.UPDATE_MIN_ORDER_SIZING == "true") {
             await getMinTradingSize();
         }
         if (process.env.USE_SMART_SETTINGS.toLowerCase() == "true") {
@@ -1732,8 +1713,6 @@ async function main() {
     }
 
 }
-
-
 
 try {
     main();
