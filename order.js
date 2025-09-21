@@ -4,6 +4,7 @@
  */
 
 import { env } from 'process';
+import { logIT, LOG_LEVEL } from './log.js';
 
 /**
  * Create a market order for opening positions

@@ -401,25 +401,8 @@ async function getBalance() {
         }
         isGettingBalance = true;
 
-        // First test basic API connectivity with server time
-        try {
-            logIT("Testing API connectivity...", LOG_LEVEL.INFO);
-            const serverTime = await Promise.race([
-                restClient.getServerTime(),
-                new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('API connectivity test timeout')), TIMEOUT_MS)
-                )
-            ]);
-            const connectivityTime = Date.now() - startTime;
-            logIT(`API connectivity test successful (${connectivityTime}ms)`, LOG_LEVEL.INFO);
-        } catch (connectivityError) {
-            logIT(`API connectivity test failed: ${connectivityError.message}`, LOG_LEVEL.ERROR);
-            throw new Error("Cannot connect to Bybit API - check internet connection and API credentials");
-        }
-
         // Get wallet balance with better error handling and logging
         let balance;
-        logIT("Fetching wallet balance from Bybit API...", LOG_LEVEL.INFO);
 
         try {
             const data = await Promise.race([
@@ -429,16 +412,11 @@ async function getBalance() {
                 )
             ]);
 
-            const apiTime = Date.now() - startTime;
-            logIT("API response received for balance", LOG_LEVEL.INFO);
-            logIT(`API call took ${apiTime}ms`, LOG_LEVEL.DEBUG);
-
             if (!data || !data.result || !data.result.list || data.result.list.length === 0) {
                 throw new Error("Invalid balance data received from API");
             }
 
             const availableBalance = data.result.list[0].totalAvailableBalance;
-            logIT(`Raw balance data: ${availableBalance}`, LOG_LEVEL.DEBUG);
 
             balance = parseFloat(availableBalance);
 
@@ -446,12 +424,7 @@ async function getBalance() {
                 throw new Error("Invalid balance value: " + availableBalance);
             }
 
-            const totalTime = Date.now() - startTime;
-            logIT(`Successfully parsed balance: ${balance} USDT (${totalTime}ms total)`, LOG_LEVEL.INFO);
-
         } catch (apiError) {
-            const totalTime = Date.now() - startTime;
-            logIT(`Bybit API balance fetch failed: ${apiError.message} (${totalTime}ms)`, LOG_LEVEL.ERROR);
             if (apiError.code) {
                 logIT(`API Error code: ${apiError.code}`, LOG_LEVEL.ERROR);
             }
