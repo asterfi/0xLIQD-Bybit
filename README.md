@@ -136,9 +136,9 @@ LOG_ROTATION_ENABLED = true              # Enable automatic log rotation
 
 *Webhook Examples*
 
-![image](https://i.imgur.com/XU6albd.png)
+<img width="405" height="183" alt="image" src="https://github.com/user-attachments/assets/6b8275ad-20a5-493d-9c2f-823bd80203ba" />
 
-![image](https://i.imgur.com/cpqyDat.png)
+<img width="606" height="534" alt="image" src="https://github.com/user-attachments/assets/80f67349-5225-418e-8172-9cf16376bd2d" />
 
 ### TO START AND STOP BOT
 
