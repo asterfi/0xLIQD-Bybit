@@ -418,6 +418,7 @@ async function getBalance() {
         }
 
         // Get wallet balance with better error handling and logging
+        let balance;
         logIT("Fetching wallet balance from Bybit API...", LOG_LEVEL.INFO);
 
         try {
@@ -439,7 +440,7 @@ async function getBalance() {
             const availableBalance = data.result.list[0].totalAvailableBalance;
             logIT(`Raw balance data: ${availableBalance}`, LOG_LEVEL.DEBUG);
 
-            const balance = parseFloat(availableBalance);
+            balance = parseFloat(availableBalance);
 
             if (isNaN(balance) || balance < 0) {
                 throw new Error("Invalid balance value: " + availableBalance);
