@@ -1089,21 +1089,30 @@ async function setLeverage(pairs, leverage) {
         //remove "allLiquidation" from pair name
         var pair = pairs[i].replace("allLiquidation.", "");
 
-        const set = await restClient.setLeverage(
-            {
-                category: 'linear',
-                symbol: pair,
-                buyLeverage: leverage,
-                sellLeverage: leverage,
-            }
-        );
         try {
             var maxLeverage = await checkLeverage(pair);
-            if (maxLeverage >= parseFloat(leverage)) {
-                logIT(`Leverage for ${pair} is set to ${leverage}`, LOG_LEVEL.INFO);
+            var actualLeverage = leverage;
+
+            // Use max leverage if USE_MAX_LEVERAGE is enabled
+            if (process.env.USE_MAX_LEVERAGE && process.env.USE_MAX_LEVERAGE.toLowerCase() === "true") {
+                actualLeverage = maxLeverage;
+                logIT(`Using max leverage for ${pair}: ${actualLeverage}`, LOG_LEVEL.INFO);
+            }
+
+            const set = await restClient.setLeverage(
+                {
+                    category: 'linear',
+                    symbol: pair,
+                    buyLeverage: actualLeverage,
+                    sellLeverage: actualLeverage,
+                }
+            );
+
+            if (maxLeverage >= parseFloat(actualLeverage)) {
+                logIT(`Leverage for ${pair} is set to ${actualLeverage}`, LOG_LEVEL.INFO);
             }
             else {
-                logIT(`Unable to set leverage for ${pair} to ${leverage}. Max leverage is lower than ${leverage}, removing pair from settings.json`, LOG_LEVEL.WARNING);
+                logIT(`Unable to set leverage for ${pair} to ${actualLeverage}. Max leverage is lower than ${actualLeverage}, removing pair from settings.json`, LOG_LEVEL.WARNING);
                 //remove pair from settings.json
                 const settings = JSON.parse(fs.readFileSync('settings.json', 'utf8'));
                 var settingsIndex = settings.pairs.findIndex(x => x.symbol === pair);
@@ -1113,11 +1122,9 @@ async function setLeverage(pairs, leverage) {
                 }
             }
 
-
-
         }
         catch (e) {
-            logIT(`ERROR setting leverage for ${pair} to ${leverage}: ${e}`, LOG_LEVEL.ERROR);
+            logIT(`ERROR setting leverage for ${pair}: ${e}`, LOG_LEVEL.ERROR);
             await sleep(1000);
         }
 
@@ -1383,72 +1390,80 @@ async function createSettings() {
         "X-RapidAPI-Key": process.env.RAPIDAPI_KEY,
         "X-RapidAPI-Host": "liquidation-report.p.rapidapi.com"
     };
-    fetch(url, { headers: headers })
-        .then(res => res.json())
-        .then((out) => {
-            // Validate data structure before saving
-            if (out && out.data && Array.isArray(out.data)) {
-                // Validate each data item has required fields
-                const validData = out.data.filter(item =>
-                    item &&
-                    item.name &&
-                    !isNaN(item.long_price) &&
-                    !isNaN(item.short_price) &&
-                    item.long_price > 0 &&
-                    item.short_price > 0
-                );
+    try {
+        const res = await fetch(url, { headers: headers });
+        const out = await res.json();
 
-                if (validData.length > 0) {
-                    // Save only valid data to research.json
-                    const validatedOut = { ...out, data: validData };
-                    fs.writeFileSync('research.json', JSON.stringify(validatedOut, null, 4));
-                    console.log(chalk.green(`Research data saved successfully. Validated ${validData.length} out of ${out.data.length} items.`));
-                } else {
-                    logIT("No valid research data items found after validation", LOG_LEVEL.ERROR);
-                }
+        // Validate data structure before saving
+        if (out && out.data && Array.isArray(out.data)) {
+            // Validate each data item has required fields
+            const validData = out.data.filter(item =>
+                item &&
+                item.name &&
+                !isNaN(item.long_price) &&
+                !isNaN(item.short_price) &&
+                item.long_price > 0 &&
+                item.short_price > 0
+            );
+
+            if (validData.length > 0) {
+                // Save only valid data to research.json
+                const validatedOut = { ...out, data: validData };
+                fs.writeFileSync('research.json', JSON.stringify(validatedOut, null, 4));
+                console.log(chalk.green(`Research data saved successfully. Validated ${validData.length} out of ${out.data.length} items.`));
             } else {
-                logIT("Invalid research data structure received from API", LOG_LEVEL.ERROR);
+                logIT("No valid research data items found after validation", LOG_LEVEL.ERROR);
             }
+        } else {
+            logIT("Invalid research data structure received from API", LOG_LEVEL.ERROR);
+        }
 
-            //create settings.json file with multiple pairs
-            var settings = {};
-            settings["pairs"] = [];
-            for (var i = 0; i < out.data.length; i++) {
-                  //if name contains 1000 or does not end in USDT, skip
-                if (out.data[i].name.includes("1000")) {
+        //create settings.json file with multiple pairs
+        var settings = {};
+        settings["pairs"] = [];
+        for (var i = 0; i < out.data.length; i++) {
+              //if name contains 1000 or does not end in USDT, skip
+            if (out.data[i].name.includes("1000")) {
+                continue;
+            }
+            else {
+                //find index of pair in min_order_sizes.json "pair" key
+                var index = minOrderSizes.findIndex(x => x.pair === out.data[i].name + "USDT");
+                if (index === -1) {
                     continue;
                 }
                 else {
-                    //find index of pair in min_order_sizes.json "pair" key
-                    var index = minOrderSizes.findIndex(x => x.pair === out.data[i].name + "USDT");
-                    if (index === -1) {
-                        continue;
-                    }
-                    else {
-                        // Calculate risk-adjusted prices using utility function
-                        const riskLevel = parseInt(process.env.RISK_LEVEL) || 2;
-                        const riskPrices = calculateRiskPrices(out.data[i].long_price, out.data[i].short_price, riskLevel);
-                        const long_risk = riskPrices.long_risk;
-                        const short_risk = riskPrices.short_risk;
+                    // Calculate risk-adjusted prices using utility function
+                    const riskLevel = parseInt(process.env.RISK_LEVEL) || 2;
+                    const riskPrices = calculateRiskPrices(out.data[i].long_price, out.data[i].short_price, riskLevel);
+                    const long_risk = riskPrices.long_risk;
+                    const short_risk = riskPrices.short_risk;
 
-                        var pair = {
-                            "symbol": out.data[i].name + "USDT",
-                            "leverage": process.env.LEVERAGE,
-                            "min_volume": out.data[i].liq_volume,
-                            "take_profit": process.env.TAKE_PROFIT_PERCENT,
-                            "stop_loss": process.env.STOP_LOSS_PERCENT,
-                            "order_size": minOrderSizes[index].minOrderSize,
-                            "max_position_size": minOrderSizes[index].maxPositionSize,
-                            "long_price": long_risk,
-                            "short_price": short_risk
-                        }
-                        settings["pairs"].push(pair);
+                    // Determine leverage to use in settings
+                    var leverageToUse = process.env.LEVERAGE;
+                    if (process.env.USE_MAX_LEVERAGE && process.env.USE_MAX_LEVERAGE.toLowerCase() === "true") {
+                        var maxLeverage = await checkLeverage(out.data[i].name + "USDT");
+                        leverageToUse = maxLeverage.toString();
                     }
+
+                    var pair = {
+                        "symbol": out.data[i].name + "USDT",
+                        "leverage": leverageToUse,
+                        "min_volume": out.data[i].liq_volume,
+                        "take_profit": process.env.TAKE_PROFIT_PERCENT,
+                        "stop_loss": process.env.STOP_LOSS_PERCENT,
+                        "order_size": minOrderSizes[index].minOrderSize,
+                        "max_position_size": minOrderSizes[index].maxPositionSize,
+                        "long_price": long_risk,
+                        "short_price": short_risk
+                    }
+                    settings["pairs"].push(pair);
                 }
             }
-            fs.writeFileSync('settings.json', JSON.stringify(settings, null, 4));
+        }
+        fs.writeFileSync('settings.json', JSON.stringify(settings, null, 4));
 
-        }).catch(err => {
+    } catch (err) {
             logIT(`Error fetching research data: ${err}`, LOG_LEVEL.ERROR);
             // Try to use existing research.json if available
             const researchFile = readResearchFile();
@@ -1474,10 +1489,17 @@ async function createSettings() {
                             const long_risk = riskPrices.long_risk;
                             const short_risk = riskPrices.short_risk;
 
+                            // Determine leverage to use in settings
+                            var leverageToUse = process.env.LEVERAGE;
+                            if (process.env.USE_MAX_LEVERAGE && process.env.USE_MAX_LEVERAGE.toLowerCase() === "true") {
+                                var maxLeverage = await checkLeverage(researchFile.data[i].name + "USDT");
+                                leverageToUse = maxLeverage.toString();
+                            }
+
                             var pair = {
                                 "symbol": researchFile.data[i].name + "USDT",
-                                "leverage": process.env.LEVERAGE,
-                                "min_volume": out.data[i].liq_volume,
+                                "leverage": leverageToUse,
+                                "min_volume": researchFile.data[i].liq_volume,
                                 "take_profit": process.env.TAKE_PROFIT_PERCENT,
                                 "stop_loss": process.env.STOP_LOSS_PERCENT,
                                 "order_size": minOrderSizes[index].minOrderSize,
@@ -1493,7 +1515,7 @@ async function createSettings() {
             } else {
                 console.log(chalk.red("No research data available. Cannot create settings."));
             }
-        });
+        }
 }
 //update settings.json file with long_price and short_price
 
