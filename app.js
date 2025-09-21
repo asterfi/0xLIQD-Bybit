@@ -17,7 +17,6 @@ import DiscordService from './discordService.js';
 import moment from 'moment';
 import { logIT, LOG_LEVEL, cleanupOldLogFiles } from './log.js';
 import { createMarketOrder } from './order.js';
-import { createPositionFromOrder } from './position.js';
 import { calculateRiskPrices, processOrderQuantity, shouldProcessPair, calculateBotUptime } from './utils.js';
 
 // Bot configuration and state
@@ -1149,58 +1148,6 @@ async function checkLeverage(symbol) {
     var leverage = position.result.list[0].leverageFilter.maxLeverage ?? 0;
     return parseFloat(leverage);
 }
-//create loop that checks for open positions every second
-async function checkOpenPositions() {
-    //get all positions
-    var positions = await restClient.getPositionInfo({ category: 'linear', settleCoin: 'USDT' });
-
-    //console.log("Positions: " + JSON.stringify(positions, null, 2));
-    var totalPositions = 0;
-    var postionList = [];
-    if (positions.result !== null && positions.result.list) {
-        for (var i = 0; i < positions.result.list.length; i++) {
-            if (positions.result.list[i].size > 0) {
-                //console.log("Open Position for " + positions.result.list[i].symbol + " with size " + positions.result.list[i].size + " and side " + positions.result.list[i].side + " and pnl " + positions.result.list[i].unrealisedPnl);
-
-                await setSafeTPSL(positions.result.list[i].symbol, positions.result.list[i]);
-
-                // Convert API position to our position structure
-                const positionObj = {
-                    symbol: positions.result.list[i].symbol,
-                    size: positions.result.list[i].size,
-                    avgPrice: positions.result.list[i].avgPrice,
-                    side: positions.result.list[i].side,
-                    unrealisedPnl: positions.result.list[i].unrealisedPnl,
-                    createdTime: positions.result.list[i].createdTime || Date.now()
-                };
-
-                // Calculate USD value using position utility with proper leverage
-                const positionLeverage = positions.result.list[i].leverage || parseFloat(process.env.LEVERAGE);
-                const structuredPosition = createPositionFromOrder(positionObj, positionLeverage);
-                totalPositions++;
-
-                //create object to store in postionList
-                var position = {
-                    symbol: structuredPosition.symbol,
-                    size: structuredPosition.size,
-                    usdValue: structuredPosition.sizeUSD,
-                    side: structuredPosition.side,
-                    pnl: structuredPosition.pnl
-                }
-                postionList.push(position);
-
-            }
-        }
-    }
-    else {
-        logIT("Open positions response is null", LOG_LEVEL.WARNING);
-    }
-    // console.log("----------------------------------------------------");
-    // console.log("------------------ OPEN POSITIONS ------------------");
-    // console.log("----------------------------------------------------");
-    // console.table(postionList);
-
-}
 
 async function getMinTradingSize() {
     try {
@@ -1819,6 +1766,13 @@ async function main() {
         if (process.env.USE_SET_LEVERAGE.toLowerCase() == "true") {
             await setLeverage(pairs, process.env.LEVERAGE);
         }
+
+        // Send startup report notification
+        if (process.env.USE_DISCORD == "true") {
+            console.log("Sending startup Discord report...");
+            await reportWebhook();
+            logIT("Startup report sent to Discord", LOG_LEVEL.INFO);
+        }
     }
     catch (err) {
         console.log(chalk.red("Error in main()"));
@@ -1837,7 +1791,6 @@ async function main() {
         try {
             await getBalance();
             await updateSettings();
-            await checkOpenPositions();
             await sleep(rateLimit);
         } catch (e) {
             console.log(e);
