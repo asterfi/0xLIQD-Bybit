@@ -1,9 +1,5 @@
 # Environment and configuration files
 .env
-account.json
-min_order_sizes.json
-settings.json
-research.json
 
 # Dependencies and build artifacts
 node_modules/

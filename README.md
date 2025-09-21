@@ -95,7 +95,23 @@ RISK_LEVEL = 2                          # Risk level for smart settings (1=conse
 UPDATE_MIN_ORDER_SIZING = true           # Auto-update min order sizes based on balance
 USE_SET_LEVERAGE = true                  # Automatically set leverage on all pairs
 MARGIN = CROSS                          # Margin mode (CROSS/ISOLATED) - currently not implemented
+HEDGE_MODE = false                      # Enable hedge position mode (true/false) for safer trading with opposite positions
 ```
+
+##### Hedge Mode Feature
+
+When `HEDGE_MODE = true`, the bot can open opposite positions (long/short) on the same trading pair. This provides enhanced safety when market movements go against existing positions while still allowing profits from market volatility.
+
+**Benefits of Hedge Mode:**
+- **Safety Net**: If one position moves against you, the opposite position can offset losses
+- **Market Neutral**: Profit from both upward and downward market movements
+- **Enhanced Risk Management**: Better control over exposure during volatile markets
+
+**How it works:**
+- When `HEDGE_MODE = false` (default): Traditional one-way trading - only one position per pair
+- When `HEDGE_MODE = true`: Hedge trading - allows both long and short positions on the same pair
+- The bot will automatically set Bybit account to hedge mode (positionMode = 3)
+- TP/SL management works independently for each position side
 
 #### Take Profit & Stop Loss
 ```

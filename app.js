@@ -41,10 +41,168 @@ const restClient = new RestClientV5({
     recv_window: 5000
 });
 
+// Auto-create and refresh configuration files on startup
+async function initializeConfigFiles() {
+    logIT("Initializing configuration files", LOG_LEVEL.INFO);
+
+    try {
+        // Auto-create/research.json if it doesn't exist
+        if (!fs.existsSync('research.json')) {
+            const defaultResearch = {
+                success: false,
+                message: "No API response - using default settings",
+                data: [
+                    {
+                        name: "BTCUSDT",
+                        price: 30000,
+                        long_price: 31500,
+                        short_price: 28500,
+                        risk_adjusted_long_price: 31800,
+                        risk_adjusted_short_price: 28200
+                    },
+                    {
+                        name: "ETHUSDT",
+                        price: 2000,
+                        long_price: 2100,
+                        short_price: 1900,
+                        risk_adjusted_long_price: 2130,
+                        risk_adjusted_short_price: 1870
+                    }
+                ]
+            };
+            fs.writeFileSync('research.json', JSON.stringify(defaultResearch, null, 4));
+            console.log(chalk.yellow("Created default research.json file"));
+        }
+
+        // Auto-create account.json if it doesn't exist
+        if (!fs.existsSync('account.json')) {
+            const defaultAccount = {
+                startingBalance: 0,
+                config_set: false,
+                lastUpdated: new Date().toISOString()
+            };
+            fs.writeFileSync('account.json', JSON.stringify(defaultAccount, null, 4));
+            console.log(chalk.yellow("Created default account.json file"));
+        }
+
+        // Auto-create min_order_sizes.json if it doesn't exist
+        if (!fs.existsSync('min_order_sizes.json')) {
+            const defaultMinOrderSizes = [
+                {
+                    pair: "BTCUSDT",
+                    minOrderSize: 1,
+                    maxPositionSize: 50,
+                    tickSize: "0.10"
+                },
+                {
+                    pair: "ETHUSDT",
+                    minOrderSize: 1,
+                    maxPositionSize: 100,
+                    tickSize: "0.01"
+                }
+            ];
+            fs.writeFileSync('min_order_sizes.json', JSON.stringify(defaultMinOrderSizes, null, 4));
+            console.log(chalk.yellow("Created default min_order_sizes.json file"));
+        }
+
+        // Auto-create settings.json if it doesn't exist
+        if (!fs.existsSync('settings.json')) {
+            const defaultSettings = {
+                pairs: [
+                    {
+                        name: "BTCUSDT",
+                        leverage: 5,
+                        orderSize: 0.02,
+                        tp: 3,
+                        sl: 1.5,
+                        minimize_loss: false,
+                        last_buy_price: 0,
+                        open_price: 0,
+                        secondary_order_count: 0,
+                        original_order_size: 0.02,
+                        min_order_size: 1,
+                        max_position_size: 50,
+                        minimize_loss_percentage: 0,
+                        minimize_loss_count: 0
+                    }
+                ],
+                global: {
+                    leverage: 5,
+                    orderSize: 0.02,
+                    tp: 3,
+                    sl: 1.5,
+                    minimize_loss: false,
+                    last_buy_price: 0,
+                    open_price: 0,
+                    secondary_order_count: 0,
+                    original_order_size: 0.02,
+                    min_order_size: 1,
+                    max_position_size: 50,
+                    minimize_loss_percentage: 0,
+                    minimize_loss_count: 0
+                }
+            };
+            fs.writeFileSync('settings.json', JSON.stringify(defaultSettings, null, 4));
+            console.log(chalk.yellow("Created default settings.json file"));
+        }
+
+        // Refresh files on startup
+        console.log(chalk.blue("Refreshing configuration files..."));
+
+        // Refresh min_order_sizes.json
+        console.log("Refreshing min_order_sizes.json...");
+        await getMinTradingSize();
+
+        // Refresh research.json
+        console.log("Refreshing research.json...");
+        const researchExists = fs.existsSync('research.json');
+        if (researchExists) {
+            const existingResearch = JSON.parse(fs.readFileSync('research.json', 'utf8'));
+            if (existingResearch.success === false) {
+                console.log("Research data is outdated or invalid, attempting to fetch new data...");
+                await createSettings();
+            } else {
+                console.log("Research data is up to date");
+            }
+        } else {
+            await createSettings();
+        }
+
+        // Refresh settings.json
+        console.log("Refreshing settings.json...");
+        const settingsExists = fs.existsSync('settings.json');
+        if (!settingsExists) {
+            await createSettings();
+        }
+
+        // Refresh account.json
+        console.log("Refreshing account.json...");
+        const accountExists = fs.existsSync('account.json');
+        if (!accountExists) {
+            const defaultAccount = {
+                startingBalance: 0,
+                config_set: false,
+                lastUpdated: new Date().toISOString()
+            };
+            fs.writeFileSync('account.json', JSON.stringify(defaultAccount, null, 4));
+        }
+
+        console.log(chalk.green("✓ Configuration files initialized and refreshed successfully"));
+        logIT("Configuration files initialized and refreshed", LOG_LEVEL.INFO);
+
+    } catch (error) {
+        console.error(chalk.red("Error initializing configuration files:", error.message));
+        logIT("Error initializing configuration files: " + error.message, LOG_LEVEL.ERROR);
+    }
+}
+
 // Initialize logging system - clean up old logs at startup
 logIT("Starting 0xLIQD-BYBIT bot", LOG_LEVEL.INFO);
 logIT("Initializing log management system", LOG_LEVEL.DEBUG);
 cleanupOldLogFiles();
+
+// Auto-create and refresh configuration files before starting the bot
+await initializeConfigFiles();
 
 wsClient.on('update', (data) => {
     logIT('WebSocket update received', LOG_LEVEL.DEBUG);
@@ -249,7 +407,6 @@ async function getPosition(pair, side) {
                     }
                 }
                 else {
-                    // adding this for debugging purposes
                     console.log("Error: getPosition invalid for " + pair + " size parameter is returning " + size);
                     messageWebhook("Error: getPosition invalid for " + pair + " size parameter is returning " + size);
                     return {side: null, entryPrice: null, size: null, percentGain: null};
@@ -291,8 +448,8 @@ async function takeProfit(symbol, position) {
     //get entry price
     var positions = await position;
 
-    // Debug log to see the actual position structure
-    logIT(`Position data for ${symbol}: ${JSON.stringify(positions, null, 2)}`, LOG_LEVEL.DEBUG);
+    // Check if we're in hedge mode
+    const hedgeMode = isHedgeMode();
 
     // Check if positions has avgPrice (direct from API) or entryPrice (from getPosition function)
     var entryPrice = positions.avgPrice || positions.entry_price;
@@ -302,6 +459,8 @@ async function takeProfit(symbol, position) {
         logIT(`Invalid position data for ${symbol}. Entry price: ${entryPrice}, Full position: ${JSON.stringify(positions, null, 2)}`, LOG_LEVEL.ERROR);
         return;
     }
+
+    logIT(`Setting TP/SL for ${symbol} (${positions.side}) in ${hedgeMode ? 'hedge' : 'one-way'} mode`, LOG_LEVEL.INFO);
 
     // Ensure entryPrice is properly converted to number
     entryPrice = parseFloat(entryPrice);
@@ -528,15 +687,19 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
         if (liquidationOrders[index].side === "Buy") {
             const settings = await JSON.parse(fs.readFileSync('settings.json', 'utf8'));
             var settingsIndex = await settings.pairs.findIndex(x => x.symbol === pair);
-            
+
             if(settingsIndex !== -1) {
                 if (liquidationOrders[index].price < settings.pairs[settingsIndex].long_price)  {
                     //see if we have an open position
                     var position = await getPosition(pair, "Buy");
 
+                    // In hedge mode, we always allow new positions regardless of existing positions
+                    // In one-way mode, traditional logic applies
+                    const hedgeMode = isHedgeMode();
+
                     //position.size should never be null now with the improved getPosition function
-                    //no open position (size === 0) - freely enter new trade
-                    if (position.size === 0) {
+                    //no open position (size === 0) or in hedge mode - freely enter new trade
+                    if (position.size === 0 || hedgeMode) {
                         //load min order size json
                         const tickData = JSON.parse(fs.readFileSync('min_order_sizes.json', 'utf8'));
                         var tickIndex = tickData.findIndex(x => x.pair === pair);
@@ -573,8 +736,9 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                     }
                     //existing position (size > 0) - only DCA, don't enter new trade
                     else if (position.size > 0 && process.env.USE_DCA_FEATURE == "true") {
-                        //only DCA if position is at a loss
-                        if (position.percentGain < 0) {
+                        const hedgeMode = isHedgeMode();
+                        //only DCA if position is at a loss or in hedge mode
+                        if (position.percentGain < 0 || hedgeMode) {
                             //make sure order is less than max order size
                             if ((position.size + settings.pairs[settingsIndex].order_size) < settings.pairs[settingsIndex].max_position_size) {
                                 //load min order size json
@@ -666,8 +830,9 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                     var position = await getPosition(pair, "Sell");
 
                     //position.size should never be null now with the improved getPosition function
-                    //no open position (size === 0) - freely enter new trade
-                    if (position.size === 0) {
+                    //no open position (size === 0) or in hedge mode - freely enter new trade
+                    const hedgeMode = isHedgeMode();
+                    if (position.size === 0 || hedgeMode) {
                         //load min order size json
                         const tickData = JSON.parse(fs.readFileSync('min_order_sizes.json', 'utf8'));
                         var tickIndex = tickData.findIndex(x => x.pair === pair);
@@ -701,9 +866,10 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                         }
                     }
                     //existing position (size > 0) - only DCA, don't enter new trade
+                    // In hedge mode, we can still open opposite positions
                     else if (position.size > 0 && process.env.USE_DCA_FEATURE == "true") {
-                        //only DCA if position is at a loss
-                        if (position.percentGain < 0) {
+                        //only DCA if position is at a loss or in hedge mode
+                        if (position.percentGain < 0 || hedgeMode) {
                             //make sure order is less than max order size
                             if ((position.size + settings.pairs[settingsIndex].order_size) < settings.pairs[settingsIndex].max_position_size) {
                                 //load min order size json
@@ -833,24 +999,32 @@ async function setLeverage(pairs, leverage) {
 
 }
 
-//set position mode to hedge
+// Set position mode based on configuration
 async function setPositionMode() {
+    const hedgeMode = process.env.HEDGE_MODE === "true" || process.env.HEDGE_MODE === "true";
+    const mode = hedgeMode ? 3 : 0; // 3 = hedge mode, 0 = one-way mode in V5
 
     const set = await restClient.switchPositionMode({
         category: 'linear',
         coin: "USDT",
-        mode: 0 // One-way mode in V5
+        mode: mode
     });
+
     //log responses
     if (set.retCode == 0) {
-        logIT("Position mode set to One-way", LOG_LEVEL.INFO);
+        const modeName = hedgeMode ? "Hedge" : "One-way";
+        logIT(`Position mode set to ${modeName}`, LOG_LEVEL.INFO);
         return true;
     }
     else {
         logIT("Unable to set position mode", LOG_LEVEL.ERROR);
         return false;
     }
-    
+}
+
+// Check if hedge mode is enabled
+function isHedgeMode() {
+    return process.env.HEDGE_MODE === "true";
 }
 
 async function checkLeverage(symbol) {

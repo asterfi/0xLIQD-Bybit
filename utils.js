@@ -71,7 +71,7 @@ export function calculateBotUptime(uptimeSeconds) {
     return times;
 }
 
-// Keep traceTrade function as it might be used elsewhere or by other modules
+// Note: traceTrade function is kept for potential use by other modules or future features
 export function traceTrade(step, obj, fields) {
     let csv_line = moment().local().toString() + "," + step;
     fields.forEach((key) => (csv_line += "," + (obj[key] ?? "")));
@@ -94,8 +94,3 @@ export function traceTrade(step, obj, fields) {
         }
     );
 }
-
-// Unused utility functions - decommissioned
-// storeJson - not used in the codebase
-// loadJson - not used in the codebase
-// jsonToCsv - not used in the codebase

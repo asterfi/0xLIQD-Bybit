@@ -28,7 +28,3 @@ export async function createMarketOrder(restClient, pair, side, size, take_profi
   const order = await restClient.submitOrder(cfg);
   return order;
 }
-
-// DECOMMISSIONED FUNCTIONS:
-// createLimitOrder - Not used by the bot (only uses market orders for liquidation trading)
-// cancelOrder - Not used (TP/SL management uses setTradingStop method instead)
