@@ -736,10 +736,6 @@ async function checkAndSetMissingTPSL() {
         console.log(chalk.green(`TP/SL check completed: ${positionsFixed}/${positionsChecked} positions fixed`));
         logIT(`TP/SL check completed: ${positionsFixed}/${positionsChecked} positions fixed`, LOG_LEVEL.INFO);
 
-        if (positionsFixed > 0 && process.env.USE_DISCORD == "true") {
-            messageWebhook(`🛡️ Startup TP/SL Check: Fixed ${positionsFixed} positions without proper risk management`, 'success');
-        }
-
     } catch (error) {
         console.log(chalk.red(`Error during TP/SL check: ${error.message}`));
         logIT(`Error during TP/SL check: ${error.message}`, LOG_LEVEL.ERROR);
