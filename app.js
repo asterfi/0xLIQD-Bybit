@@ -1095,7 +1095,7 @@ async function setLeverage(pairs, leverage) {
 
             // Use max leverage if USE_MAX_LEVERAGE is enabled
             if (process.env.USE_MAX_LEVERAGE && process.env.USE_MAX_LEVERAGE.toLowerCase() === "true") {
-                actualLeverage = maxLeverage;
+                actualLeverage = Math.floor(maxLeverage);
                 logIT(`Using max leverage for ${pair}: ${actualLeverage}`, LOG_LEVEL.INFO);
             }
 
@@ -1103,8 +1103,8 @@ async function setLeverage(pairs, leverage) {
                 {
                     category: 'linear',
                     symbol: pair,
-                    buyLeverage: actualLeverage,
-                    sellLeverage: actualLeverage,
+                    buyLeverage: actualLeverage.toString(),
+                    sellLeverage: actualLeverage.toString(),
                 }
             );
 
