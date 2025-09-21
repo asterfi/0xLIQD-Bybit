@@ -612,7 +612,7 @@ async function takeProfit(symbol, position) {
         var tickSize = tickData[index].tickSize;
         var decimalPlaces = (tickSize.toString().split(".")[1] || []).length;
 
-        if (positions.size > 0 && positions.take_profit === 0 || takeProfit !== positions.take_profit) {
+        if (positions.size > 0 && (positions.take_profit === 0 || takeProfit !== positions.take_profit)) {
             if (process.env.USE_STOPLOSS.toLowerCase() === "true") {
                 // Format prices as strings with correct decimal places
                 const takeProfitStr = takeProfit.toFixed(decimalPlaces);
@@ -812,6 +812,19 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                             if (process.env.USE_DISCORD == "true") {
                                 orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Buy", position.size, position.percentGain, trigger_qty);
                             }
+
+                            // Set TP/SL after initial entry
+                            setTimeout(async () => {
+                                try {
+                                    const updatedPosition = await getPosition(pair, "Buy");
+                                    if (updatedPosition.size > 0) {
+                                        logIT(`Setting TP/SL after initial Long entry for ${pair}`, LOG_LEVEL.INFO);
+                                        await setSafeTPSL(pair, updatedPosition);
+                                    }
+                                } catch (error) {
+                                    logIT(`Error setting TP/SL after initial Long entry for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
+                                }
+                            }, 500); // Small delay to ensure order is filled
                         } else {
                             logIT(`Failed to place Long Order for ${pair}: ${order.retMsg} (Error Code: ${order.retCode})`, LOG_LEVEL.ERROR);
                             if (process.env.USE_DISCORD == "true") {
@@ -947,6 +960,19 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                             if (process.env.USE_DISCORD == "true") {
                                 orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Sell", position.size, position.percentGain, trigger_qty);
                             }
+
+                            // Set TP/SL after initial entry
+                            setTimeout(async () => {
+                                try {
+                                    const updatedPosition = await getPosition(pair, "Sell");
+                                    if (updatedPosition.size > 0) {
+                                        logIT(`Setting TP/SL after initial Short entry for ${pair}`, LOG_LEVEL.INFO);
+                                        await setSafeTPSL(pair, updatedPosition);
+                                    }
+                                } catch (error) {
+                                    logIT(`Error setting TP/SL after initial Short entry for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
+                                }
+                            }, 500); // Small delay to ensure order is filled
                         } else {
                             logIT(`Failed to place Short Order for ${pair}: ${order.retMsg} (Error Code: ${order.retCode})`, LOG_LEVEL.ERROR);
                             if (process.env.USE_DISCORD == "true") {
