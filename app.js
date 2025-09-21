@@ -18,6 +18,7 @@ import moment from 'moment';
 import { logIT, LOG_LEVEL, cleanupOldLogFiles } from './log.js';
 import { createMarketOrder } from './order.js';
 import { calculateRiskPrices, processOrderQuantity, shouldProcessPair, calculateBotUptime } from './utils.js';
+import APIDataService from './apiDataService.js';
 
 // Bot configuration and state
 let timestampBotStart = moment(); // Bot start time for uptime calculation
@@ -48,6 +49,23 @@ const restClient = new RestClientV5({
     testnet: false, // Use mainnet for trading
     recv_window: 5000 // Extended receive window for API calls
 });
+
+// Initialize API data service for periodic updates
+const apiDataService = new APIDataService(restClient, discordService);
+
+// Configure update intervals from environment variables
+if (process.env.RESEARCH_UPDATE_INTERVAL) {
+    apiDataService.updateIntervals.research = parseInt(process.env.RESEARCH_UPDATE_INTERVAL) * 60 * 1000;
+}
+if (process.env.MIN_ORDER_SIZE_UPDATE_INTERVAL) {
+    apiDataService.updateIntervals.minOrderSizes = parseInt(process.env.MIN_ORDER_SIZE_UPDATE_INTERVAL) * 60 * 1000;
+}
+if (process.env.SETTINGS_UPDATE_INTERVAL) {
+    apiDataService.updateIntervals.settings = parseInt(process.env.SETTINGS_UPDATE_INTERVAL) * 60 * 1000;
+}
+if (process.env.ACCOUNT_UPDATE_INTERVAL) {
+    apiDataService.updateIntervals.account = parseInt(process.env.ACCOUNT_UPDATE_INTERVAL) * 60 * 1000;
+}
 
 // Auto-create and refresh configuration files on startup
 async function initializeConfigFiles() {
@@ -119,68 +137,55 @@ async function initializeConfigFiles() {
                 pairs: [
                     {
                         symbol: "BTCUSDT",
-                        leverage: 5,
-                        orderSize: 0.02,
-                        tp: 3,
-                        sl: 1.5,
-                        minimize_loss: false,
-                        last_buy_price: 0,
-                        open_price: 0,
-                        secondary_order_count: 0,
-                        original_order_size: 0.02,
-                        min_order_size: 1,
+                        leverage: "20",
+                        min_volume: 1500,
+                        take_profit: "0.484",
+                        stop_loss: "50",
+                        order_size: 0.001,
                         max_position_size: 50,
-                        minimize_loss_percentage: 0,
-                        minimize_loss_count: 0
+                        long_price: 0.1,
+                        short_price: 0.1
                     }
-                ],
-                global: {
-                    leverage: 5,
-                    orderSize: 0.02,
-                    tp: 3,
-                    sl: 1.5,
-                    minimize_loss: false,
-                    last_buy_price: 0,
-                    open_price: 0,
-                    secondary_order_count: 0,
-                    original_order_size: 0.02,
-                    min_order_size: 1,
-                    max_position_size: 50,
-                    minimize_loss_percentage: 0,
-                    minimize_loss_count: 0
-                }
+                ]
             };
             fs.writeFileSync('settings.json', JSON.stringify(defaultSettings, null, 4));
             console.log(chalk.yellow("Created default settings.json file"));
         }
 
-        // Refresh files on startup
-        console.log(chalk.blue("Refreshing configuration files..."));
+        // Refresh files on startup using the new API data service
+        console.log(chalk.blue("Refreshing configuration files with API data service..."));
 
-        // Refresh min_order_sizes.json
-        console.log("Refreshing min_order_sizes.json...");
-        await getMinTradingSize();
+        // Force initial update of all data files
+        console.log("Performing initial API data refresh...");
+        try {
+            const updateResults = await apiDataService.forceUpdateAll();
+            console.log(chalk.green(`Initial refresh completed: ${JSON.stringify(updateResults)}`));
+        } catch (error) {
+            console.log(chalk.yellow(`Initial refresh failed, using fallback methods: ${error.message}`));
 
-        // Refresh research.json
-        console.log("Refreshing research.json...");
-        const researchExists = fs.existsSync('research.json');
-        if (researchExists) {
-            const existingResearch = JSON.parse(fs.readFileSync('research.json', 'utf8'));
-            if (existingResearch.success === false) {
-                console.log("Research data is outdated or invalid, attempting to fetch new data...");
-                await createSettings();
+            // Fallback to original methods if API service fails
+            console.log("Refreshing min_order_sizes.json (fallback)...");
+            await getMinTradingSize();
+
+            console.log("Refreshing research.json (fallback)...");
+            const researchExists = fs.existsSync('research.json');
+            if (researchExists) {
+                const existingResearch = JSON.parse(fs.readFileSync('research.json', 'utf8'));
+                if (existingResearch.success === false) {
+                    console.log("Research data is outdated or invalid, attempting to fetch new data...");
+                    await createSettings();
+                } else {
+                    console.log("Research data is up to date");
+                }
             } else {
-                console.log("Research data is up to date");
+                await createSettings();
             }
-        } else {
-            await createSettings();
-        }
 
-        // Refresh settings.json
-        console.log("Refreshing settings.json...");
-        const settingsExists = fs.existsSync('settings.json');
-        if (!settingsExists) {
-            await createSettings();
+            console.log("Refreshing settings.json (fallback)...");
+            const settingsExists = fs.existsSync('settings.json');
+            if (!settingsExists) {
+                await createSettings();
+            }
         }
 
         // Refresh account.json
@@ -859,8 +864,8 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
 
             if (settingsIndex !== -1) {
                 if (liquidationOrders[index].price < settings.pairs[settingsIndex].long_price) {
-                    //see if we have an open position
-                    var position = await getPosition(pair, "Buy");
+                    // LONG liquidation - we should go SHORT (counter-trading)
+                    var position = await getPosition(pair, "Sell");
 
                     // In hedge mode, we always allow new positions regardless of existing positions
                     // In one-way mode, traditional logic applies
@@ -884,34 +889,34 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                         // Process order quantity using utility function
                         orderQty = processOrderQuantity(orderQty, minOrderQty, qtyStep);
 
-                        console.log(chalk.blue("Placing Buy order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
+                        console.log(chalk.blue("Placing SELL order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
 
-                        const positionIdx = isHedgeMode() ? 1 : 0; // 1 for hedge Buy, 0 for one-way
-                        const order = await createMarketOrder(restClient, pair, "Buy", orderQty, positionIdx);
+                        const positionIdx = isHedgeMode() ? 2 : 0; // 2 for hedge Sell, 0 for one-way
+                        const order = await createMarketOrder(restClient, pair, "Sell", orderQty, positionIdx);
 
                         // Check if order was successful
                         if (order.retCode === 0 && order.result) {
-                            logIT(`New Long Order Placed for ${pair} at ${settings.pairs[settingsIndex].order_size} size`, LOG_LEVEL.INFO);
+                            logIT(`New SHORT Order Placed for ${pair} at ${settings.pairs[settingsIndex].order_size} size`, LOG_LEVEL.INFO);
                             if (process.env.USE_DISCORD == "true") {
-                                orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Buy", position.size, position.percentGain, trigger_qty);
+                                orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Sell", position.size, position.percentGain, trigger_qty);
                             }
 
                             // Set TP/SL after initial entry
                             setTimeout(async () => {
                                 try {
-                                    const updatedPosition = await getPosition(pair, "Buy");
+                                    const updatedPosition = await getPosition(pair, "Sell");
                                     if (updatedPosition.size > 0) {
-                                        logIT(`Setting TP/SL after initial Long entry for ${pair}`, LOG_LEVEL.INFO);
+                                        logIT(`Setting TP/SL after initial SHORT entry for ${pair}`, LOG_LEVEL.INFO);
                                         await setSafeTPSL(pair, updatedPosition);
                                     }
                                 } catch (error) {
-                                    logIT(`Error setting TP/SL after initial Long entry for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
+                                    logIT(`Error setting TP/SL after initial SHORT entry for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
                                 }
                             }, 500); // Small delay to ensure order is filled
                         } else {
-                            logIT(`Failed to place Long Order for ${pair}: ${order.retMsg} (Error Code: ${order.retCode})`, LOG_LEVEL.ERROR);
+                            logIT(`Failed to place SHORT Order for ${pair}: ${order.retMsg} (Error Code: ${order.retCode})`, LOG_LEVEL.ERROR);
                             if (process.env.USE_DISCORD == "true") {
-                                messageWebhook("Failed to place Long Order for " + pair + ": " + order.retMsg);
+                                messageWebhook("Failed to place SHORT Order for " + pair + ": " + order.retMsg);
                             }
                         }
 
@@ -939,13 +944,13 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                                 // Process DCA order quantity using utility function
                                 orderQty = processOrderQuantity(orderQty, minOrderQty, qtyStep);
 
-                                console.log(chalk.blue("Placing Buy DCA order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
+                                console.log(chalk.blue("Placing SELL DCA order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
 
-                                const positionIdx = isHedgeMode() ? 1 : 0; // 1 for hedge Buy, 0 for one-way
+                                const positionIdx = isHedgeMode() ? 2 : 0; // 2 for hedge Sell, 0 for one-way
                                 const orderParams = {
                                     category: 'linear',
                                     symbol: pair,
-                                    side: "Buy",
+                                    side: "Sell",
                                     orderType: "Market",
                                     qty: orderQty,
                                     reduceOnly: false  // Explicitly set to false to open new positions
@@ -953,31 +958,31 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
 
                                 logIT(`DCA Order parameters: ${JSON.stringify(orderParams, null, 2)}`, LOG_LEVEL.DEBUG);
 
-                                const order = await createMarketOrder(restClient, pair, "Buy", orderQty, positionIdx);
+                                const order = await createMarketOrder(restClient, pair, "Sell", orderQty, positionIdx);
 
                                 // Check if order was successful
                                 if (order.retCode === 0 && order.result) {
-                                    console.log(chalk.bgGreenBright("Long DCA Order Placed for " + pair + " at " + settings.pairs[settingsIndex].order_size + " size"));
+                                    console.log(chalk.bgGreenBright("SHORT DCA Order Placed for " + pair + " at " + settings.pairs[settingsIndex].order_size + " size"));
                                     if (process.env.USE_DISCORD == "true") {
-                                        orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Buy", position.size, position.percentGain, trigger_qty);
+                                        orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Sell", position.size, position.percentGain, trigger_qty);
                                     }
 
                                     // Update TP/SL after DCA
                                     setTimeout(async () => {
                                         try {
-                                            const updatedPosition = await getPosition(pair, "Buy");
+                                            const updatedPosition = await getPosition(pair, "Sell");
                                             if (updatedPosition.size > 0) {
-                                                logIT(`Updating TP/SL after Long DCA for ${pair}`, LOG_LEVEL.INFO);
+                                                logIT(`Updating TP/SL after SHORT DCA for ${pair}`, LOG_LEVEL.INFO);
                                                 await setSafeTPSL(pair, updatedPosition);
                                             }
                                         } catch (error) {
-                                            logIT(`Error updating TP/SL after Long DCA for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
+                                            logIT(`Error updating TP/SL after SHORT DCA for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
                                         }
                                     }, 500); // Small delay to ensure DCA order is filled
                                 } else {
-                                    console.log(chalk.redBright("Failed to place Long DCA Order for " + pair + ": " + order.retMsg + " (Error Code: " + order.retCode + ")"));
+                                    console.log(chalk.redBright("Failed to place SHORT DCA Order for " + pair + ": " + order.retMsg + " (Error Code: " + order.retCode + ")"));
                                     if (process.env.USE_DISCORD == "true") {
-                                        messageWebhook("Failed to place Long DCA Order for " + pair + ": " + order.retMsg);
+                                        messageWebhook("Failed to place SHORT DCA Order for " + pair + ": " + order.retMsg);
                                     }
                                 }
                             }
@@ -1011,7 +1016,8 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
             var settingsIndex = await settings.pairs.findIndex(x => x.symbol === pair);
             if (settingsIndex !== -1) {
                 if (liquidationOrders[index].price > settings.pairs[settingsIndex].short_price) {
-                    var position = await getPosition(pair, "Sell");
+                    // SHORT liquidation - we should go LONG (counter-trading)
+                    var position = await getPosition(pair, "Buy");
 
                     //position.size should never be null now with the improved getPosition function
                     //no open position (size === 0) or in hedge mode - freely enter new trade
@@ -1032,34 +1038,34 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                         // Process order quantity using utility function
                         orderQty = processOrderQuantity(orderQty, minOrderQty, qtyStep);
 
-                        console.log(chalk.blue("Placing Sell order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
+                        console.log(chalk.blue("Placing BUY order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
 
-                        const positionIdx = isHedgeMode() ? 2 : 0; // 2 for hedge Sell, 0 for one-way
-                        const order = await createMarketOrder(restClient, pair, "Sell", orderQty, positionIdx);
+                        const positionIdx = isHedgeMode() ? 1 : 0; // 1 for hedge Buy, 0 for one-way
+                        const order = await createMarketOrder(restClient, pair, "Buy", orderQty, positionIdx);
 
                         // Check if order was successful
                         if (order.retCode === 0 && order.result) {
-                            logIT(`New Short Order Placed for ${pair} at ${settings.pairs[settingsIndex].order_size} size`, LOG_LEVEL.INFO);
+                            logIT(`New LONG Order Placed for ${pair} at ${settings.pairs[settingsIndex].order_size} size`, LOG_LEVEL.INFO);
                             if (process.env.USE_DISCORD == "true") {
-                                orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Sell", position.size, position.percentGain, trigger_qty);
+                                orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Buy", position.size, position.percentGain, trigger_qty);
                             }
 
                             // Set TP/SL after initial entry
                             setTimeout(async () => {
                                 try {
-                                    const updatedPosition = await getPosition(pair, "Sell");
+                                    const updatedPosition = await getPosition(pair, "Buy");
                                     if (updatedPosition.size > 0) {
-                                        logIT(`Setting TP/SL after initial Short entry for ${pair}`, LOG_LEVEL.INFO);
+                                        logIT(`Setting TP/SL after initial LONG entry for ${pair}`, LOG_LEVEL.INFO);
                                         await setSafeTPSL(pair, updatedPosition);
                                     }
                                 } catch (error) {
-                                    logIT(`Error setting TP/SL after initial Short entry for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
+                                    logIT(`Error setting TP/SL after initial LONG entry for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
                                 }
                             }, 500); // Small delay to ensure order is filled
                         } else {
-                            logIT(`Failed to place Short Order for ${pair}: ${order.retMsg} (Error Code: ${order.retCode})`, LOG_LEVEL.ERROR);
+                            logIT(`Failed to place LONG Order for ${pair}: ${order.retMsg} (Error Code: ${order.retCode})`, LOG_LEVEL.ERROR);
                             if (process.env.USE_DISCORD == "true") {
-                                messageWebhook("Failed to place Short Order for " + pair + ": " + order.retMsg);
+                                messageWebhook("Failed to place LONG Order for " + pair + ": " + order.retMsg);
                             }
                         }
                     }
@@ -1085,13 +1091,13 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                                 // Process DCA order quantity using utility function
                                 orderQty = processOrderQuantity(orderQty, minOrderQty, qtyStep);
 
-                                console.log(chalk.blue("Placing Sell DCA order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
+                                console.log(chalk.blue("Placing BUY DCA order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
 
-                                const positionIdx = isHedgeMode() ? 2 : 0; // 2 for hedge Sell, 0 for one-way
+                                const positionIdx = isHedgeMode() ? 1 : 0; // 1 for hedge Buy, 0 for one-way
                                 const orderParams = {
                                     category: 'linear',
                                     symbol: pair,
-                                    side: "Sell",
+                                    side: "Buy",
                                     orderType: "Market",
                                     qty: orderQty,
                                     reduceOnly: false  // Explicitly set to false to open new positions
@@ -1099,31 +1105,31 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
 
                                 logIT(`DCA Order parameters: ${JSON.stringify(orderParams, null, 2)}`, LOG_LEVEL.DEBUG);
 
-                                const order = await createMarketOrder(restClient, pair, "Sell", orderQty, positionIdx);
+                                const order = await createMarketOrder(restClient, pair, "Buy", orderQty, positionIdx);
 
                                 // Check if order was successful
                                 if (order.retCode === 0 && order.result) {
-                                    console.log(chalk.bgRedBright("Short DCA Order Placed for " + pair + " at " + settings.pairs[settingsIndex].order_size + " size"));
+                                    console.log(chalk.bgRedBright("LONG DCA Order Placed for " + pair + " at " + settings.pairs[settingsIndex].order_size + " size"));
                                     if (process.env.USE_DISCORD == "true") {
-                                        orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Sell", position.size, position.percentGain, trigger_qty);
+                                        orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Buy", position.size, position.percentGain, trigger_qty);
                                     }
 
                                     // Update TP/SL after DCA
                                     setTimeout(async () => {
                                         try {
-                                            const updatedPosition = await getPosition(pair, "Sell");
+                                            const updatedPosition = await getPosition(pair, "Buy");
                                             if (updatedPosition.size > 0) {
-                                                logIT(`Updating TP/SL after Short DCA for ${pair}`, LOG_LEVEL.INFO);
+                                                logIT(`Updating TP/SL after LONG DCA for ${pair}`, LOG_LEVEL.INFO);
                                                 await setSafeTPSL(pair, updatedPosition);
                                             }
                                         } catch (error) {
-                                            logIT(`Error updating TP/SL after Short DCA for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
+                                            logIT(`Error updating TP/SL after LONG DCA for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
                                         }
                                     }, 500); // Small delay to ensure DCA order is filled
                                 } else {
-                                    console.log(chalk.redBright("Failed to place Short DCA Order for " + pair + ": " + order.retMsg + " (Error Code: " + order.retCode + ")"));
+                                    console.log(chalk.redBright("Failed to place LONG DCA Order for " + pair + ": " + order.retMsg + " (Error Code: " + order.retCode + ")"));
                                     if (process.env.USE_DISCORD == "true") {
-                                        messageWebhook("Failed to place Short DCA Order for " + pair + ": " + order.retMsg);
+                                        messageWebhook("Failed to place LONG DCA Order for " + pair + ": " + order.retMsg);
                                     }
                                 }
                             }
@@ -1922,11 +1928,12 @@ async function main() {
         }
 
         if (process.env.UPDATE_MIN_ORDER_SIZING == "true") {
-            await getMinTradingSize();
+            console.log("Updating minimum order sizes with API data service");
+            await apiDataService.updateMinOrderSizes();
         }
         if (process.env.USE_SMART_SETTINGS.toLowerCase() == "true") {
-            console.log("Updating settings.json with smart settings");
-            await createSettings();
+            console.log("Updating settings with smart settings using API data service");
+            await apiDataService.forceUpdateAll();
         }
         if (process.env.USE_SET_LEVERAGE.toLowerCase() == "true") {
             await setLeverage(pairs, process.env.LEVERAGE);
@@ -1954,12 +1961,21 @@ async function main() {
         await sleep(10000);
     }
 
+    // Ensure research data is available before starting liquidation engine
+    if (process.env.USE_SMART_SETTINGS.toLowerCase() == "true") {
+        console.log("Initial research data fetch before starting liquidation engine using API data service...");
+        await apiDataService.forceUpdateAll();
+    }
+
     await liquidationEngine(pairs);
 
     while (true) {
         try {
             await getBalance();
-            await updateSettings();
+
+            // Use the new API data service for periodic updates
+            await apiDataService.updateLoop();
+
             await sleep(rateLimit);
         } catch (e) {
             console.log(e);
