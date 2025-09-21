@@ -639,6 +639,47 @@ async function setTpSlWithRetry(restClient, symbol, takeProfitStr, stopLossStr, 
         logIT(`Error in setTpSlWithRetry for ${symbol}: ${error.message}`, LOG_LEVEL.ERROR);
     }
 }
+/**
+ * Get detailed position information for hedge mode logic
+ * Returns both total positions and unique pairs with their sides
+ */
+async function getDetailedPositionInfo() {
+    try {
+        var positions = await restClient.getPositionInfo({ category: 'linear', settleCoin: 'USDT' });
+        var positionInfo = {
+            totalOpenPositions: 0,
+            uniquePairs: new Map(), // Map of pair -> array of sides
+            canAddHedgePosition: new Map() // Map of pair -> boolean indicating if opposite position can be added
+        };
+
+        if (positions.result && positions.result.list) {
+            for (var i = 0; i < positions.result.list.length; i++) {
+                if (positions.result.list[i].size > 0) {
+                    positionInfo.totalOpenPositions++;
+                    var symbol = positions.result.list[i].symbol;
+                    var side = positions.result.list[i].side;
+
+                    // Track unique pairs and their sides
+                    if (!positionInfo.uniquePairs.has(symbol)) {
+                        positionInfo.uniquePairs.set(symbol, []);
+                    }
+                    positionInfo.uniquePairs.get(symbol).push(side);
+
+                    // Check if opposite position can be added (for hedge mode)
+                    var hasLong = positionInfo.uniquePairs.get(symbol).includes("Buy");
+                    var hasShort = positionInfo.uniquePairs.get(symbol).includes("Sell");
+                    positionInfo.canAddHedgePosition.set(symbol, !(hasLong && hasShort));
+                }
+            }
+        }
+
+        return positionInfo;
+    } catch (error) {
+        logIT(`Error getting detailed position info: ${error.message}`, LOG_LEVEL.ERROR);
+        return null;
+    }
+}
+
 //fetch how how openPositions there are
 async function totalOpenPositions() {
     try {
@@ -661,6 +702,69 @@ async function totalOpenPositions() {
     }
     catch (error) {
         return null;
+    }
+}
+
+/**
+ * Check if a hedge position can be opened for a specific pair
+ * @param {string} pair - Trading pair symbol
+ * @param {string} side - Desired position side ('Buy' or 'Sell')
+ * @returns {boolean} True if hedge position can be opened
+ */
+async function canOpenHedgePosition(pair, side) {
+    try {
+        const positionInfo = await getDetailedPositionInfo();
+        if (!positionInfo) return false;
+
+        // Check if pair already has positions
+        if (positionInfo.uniquePairs.has(pair)) {
+            const existingSides = positionInfo.uniquePairs.get(pair);
+            const oppositeSide = side === "Buy" ? "Sell" : "Buy";
+
+            // Can open hedge position if:
+            // 1. Pair doesn't already have both sides
+            // 2. Pair has the opposite side (to hedge)
+            return existingSides.includes(oppositeSide) && !existingSides.includes(side);
+        }
+
+        return false; // No existing positions for this pair
+    } catch (error) {
+        logIT(`Error checking hedge position for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
+        return false;
+    }
+}
+
+/**
+ * Check if new position can be opened considering hedge mode rules
+ * @param {string} pair - Trading pair symbol
+ * @param {string} side - Desired position side ('Buy' or 'Sell')
+ * @returns {boolean} True if position can be opened
+ */
+async function canOpenNewPosition(pair, side) {
+    try {
+        const hedgeMode = isHedgeMode();
+        const maxPositions = parseInt(process.env.MAX_OPEN_POSITIONS) || 2;
+
+        if (!hedgeMode) {
+            // Traditional mode: simple position count
+            const openPositions = await totalOpenPositions();
+            return openPositions < maxPositions;
+        } else {
+            // Hedge mode: more complex logic
+            const positionInfo = await getDetailedPositionInfo();
+            if (!positionInfo) return false;
+
+            // If under max positions, always allow
+            if (positionInfo.totalOpenPositions < maxPositions) {
+                return true;
+            }
+
+            // If at max positions, only allow hedge positions on existing pairs
+            return await canOpenHedgePosition(pair, side);
+        }
+    } catch (error) {
+        logIT(`Error checking if new position can be opened for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
+        return false;
     }
 }
 
@@ -774,10 +878,34 @@ async function setSafeTPSL(symbol, position) {
 
 //against trend
 async function scalp(pair, index, trigger_qty, liq_volume = null) {
-    //check how many positions are open
-    var openPositions = await totalOpenPositions();
-    //make sure openPositions is less than max open positions and not null
-    if (openPositions < process.env.MAX_OPEN_POSITIONS && openPositions !== null) {
+    // Check if new position can be opened considering hedge mode rules
+    var canOpenPosition = false;
+    var positionInfo = null;
+
+    try {
+        // Get liquidation side (Buy = LONG liquidation, Sell = SHORT liquidation)
+        const liquidationSide = liquidationOrders[index].side;
+        // Determine the position side we want to open (follow the liquidation direction)
+        const desiredSide = liquidationSide === "Buy" ? "Buy" : "Sell";
+
+        // Check if we can open a new position with hedge mode logic
+        canOpenPosition = await canOpenNewPosition(pair, desiredSide);
+
+        // Get detailed position info for logging
+        positionInfo = await getDetailedPositionInfo();
+    } catch (error) {
+        logIT(`Error checking position limits for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
+        canOpenPosition = false;
+    }
+
+    // Log position check results
+    if (positionInfo) {
+        const hedgeMode = isHedgeMode();
+        const maxPositions = parseInt(process.env.MAX_OPEN_POSITIONS) || 2;
+        logIT(`Position check for ${pair}: ${positionInfo.totalOpenPositions}/${maxPositions} positions, Hedge mode: ${hedgeMode}, Can open: ${canOpenPosition}`, LOG_LEVEL.DEBUG);
+    }
+
+    if (canOpenPosition) {
         //Long liquidation
         if (liquidationOrders[index].side === "Buy") {
             const settings = await JSON.parse(fs.readFileSync('settings.json', 'utf8'));
@@ -793,7 +921,8 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                     const hedgeMode = isHedgeMode();
 
                     //position.size should never be null now with the improved getPosition function
-                    //no open position (size === 0) or in hedge mode - freely enter new trade
+                    //no open position (size === 0) or in hedge mode - check if we can enter new trade
+                    // Note: hedge mode allows opening opposite positions on existing pairs
                     if (position.size === 0 || hedgeMode) {
                         //load min order size json
                         const tickData = JSON.parse(fs.readFileSync('min_order_sizes.json', 'utf8'));
@@ -941,7 +1070,8 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                     var position = await getPosition(pair, "Sell");
 
                     //position.size should never be null now with the improved getPosition function
-                    //no open position (size === 0) or in hedge mode - freely enter new trade
+                    //no open position (size === 0) or in hedge mode - check if we can enter new trade
+                    // Note: hedge mode allows opening opposite positions on existing pairs
                     const hedgeMode = isHedgeMode();
                     if (position.size === 0 || hedgeMode) {
                         //load min order size json
@@ -1079,7 +1209,26 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
         }
     }
     else {
-        console.log(chalk.redBright("Max Open Positions Reached!"));
+        const hedgeMode = isHedgeMode();
+        if (hedgeMode && positionInfo) {
+            // In hedge mode, provide more detailed information about why position can't be opened
+            const liquidationSide = liquidationOrders[index].side;
+            const desiredSide = liquidationSide === "Buy" ? "Buy" : "Sell";
+
+            // Check if this is a hedge position attempt
+            const canHedge = await canOpenHedgePosition(pair, desiredSide);
+
+            if (canHedge) {
+                console.log(chalk.yellow(`Hedge position opportunity for ${pair} ${desiredSide} - would be allowed but other conditions not met`));
+                logIT(`Hedge position opportunity for ${pair} ${desiredSide} - conditions not met`, LOG_LEVEL.DEBUG);
+            } else {
+                console.log(chalk.yellow(`Max positions reached. ${pair} already has both LONG and SHORT positions or cannot be hedged`));
+                logIT(`Max positions reached for ${pair}. Cannot open ${desiredSide} position - pair may already be fully hedged`, LOG_LEVEL.INFO);
+            }
+        } else {
+            console.log(chalk.redBright("Max Open Positions Reached!"));
+            logIT(`Max open positions (${process.env.MAX_OPEN_POSITIONS}) reached`, LOG_LEVEL.WARNING);
+        }
     }
 
 }
@@ -1816,6 +1965,47 @@ async function reportWebhook() {
     }
 }
 
+/**
+ * Test hedge mode logic with various scenarios
+ * This function can be called manually to validate the hedge mode behavior
+ */
+async function testHedgeModeLogic() {
+    console.log(chalk.blue("=== Testing Hedge Mode Logic ==="));
+
+    try {
+        const hedgeMode = isHedgeMode();
+        console.log(`Current hedge mode: ${hedgeMode}`);
+
+        // Test 1: Get detailed position info
+        console.log("\n--- Test 1: Get Detailed Position Info ---");
+        const positionInfo = await getDetailedPositionInfo();
+        if (positionInfo) {
+            console.log(`Total open positions: ${positionInfo.totalOpenPositions}`);
+            console.log(`Unique pairs: ${Array.from(positionInfo.uniquePairs.keys()).join(', ')}`);
+            console.log(`Can add hedge positions:`);
+            positionInfo.canAddHedgePosition.forEach((canAdd, pair) => {
+                console.log(`  ${pair}: ${canAdd}`);
+            });
+        }
+
+        // Test 2: Check canOpenNewPosition for different scenarios
+        console.log("\n--- Test 2: Check Position Opening Logic ---");
+        const testPairs = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
+        const testSides = ['Buy', 'Sell'];
+
+        for (const pair of testPairs) {
+            for (const side of testSides) {
+                const canOpen = await canOpenNewPosition(pair, side);
+                console.log(`Can open ${side} position on ${pair}: ${canOpen}`);
+            }
+        }
+
+        console.log(chalk.green("=== Hedge Mode Logic Test Complete ==="));
+    } catch (error) {
+        console.error(chalk.red("Error testing hedge mode logic:"), error);
+    }
+}
+
 async function main() {
     console.log("Starting 0xLIQD-BYBIT...");
     try {
@@ -1897,14 +2087,28 @@ async function main() {
 
 }
 
-try {
-    main();
-}
-catch (error) {
-    console.log(chalk.red("Error: ", error));
+// Check for command line arguments
+const args = process.argv.slice(2);
+if (args.includes('--test-hedge')) {
+    // Run hedge mode test instead of main bot
+    console.log(chalk.blue("Running hedge mode test..."));
+    testHedgeModeLogic().then(() => {
+        console.log(chalk.green("Hedge mode test completed"));
+        process.exit(0);
+    }).catch(error => {
+        console.error(chalk.red("Hedge mode test failed:"), error);
+        process.exit(1);
+    });
+} else {
+    try {
+        main();
+    }
+    catch (error) {
+        console.log(chalk.red("Error: ", error));
 
-    if (process.env.USE_DISCORD == "true")
-        messageWebhook(error);
+        if (process.env.USE_DISCORD == "true")
+            messageWebhook(error);
 
-    main();
+        main();
+    }
 }
