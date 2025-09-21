@@ -81,6 +81,8 @@ API_SECRET = apisecrethere               # Bybit API Secret (required)
 RAPIDAPI_KEY = rapidapi_key_here         # RapidAPI Key for liquidation data (required)
 ```
 
+> **Note:** The RapidAPI key requires a **Pro subscription** to liquidation-report API. You can purchase and obtain your API key from: https://rapidapi.com/AtsutaneDotNet/api/liquidation-report
+
 #### Trading & Position Management
 ```
 LEVERAGE = 20                           # Default leverage for trades (1-100)
