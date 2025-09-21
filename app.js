@@ -451,6 +451,14 @@ async function takeProfit(symbol, position) {
     // Check if we're in hedge mode
     const hedgeMode = isHedgeMode();
 
+    // Calculate position index based on position side and hedge mode
+    let positionIdx = 0;
+    if (hedgeMode) {
+        positionIdx = positions.side === "Buy" ? 1 : 2; // 1 for hedge Buy, 2 for hedge Sell
+    } else {
+        positionIdx = 0; // 0 for one-way mode
+    }
+
     // Check if positions has avgPrice (direct from API) or entryPrice (from getPosition function)
     var entryPrice = positions.avgPrice || positions.entry_price;
 
@@ -460,7 +468,7 @@ async function takeProfit(symbol, position) {
         return;
     }
 
-    logIT(`Setting TP/SL for ${symbol} (${positions.side}) in ${hedgeMode ? 'hedge' : 'one-way'} mode`, LOG_LEVEL.INFO);
+    logIT(`Setting TP/SL for ${symbol} (${positions.side}) in ${hedgeMode ? 'hedge' : 'one-way'} mode (positionIdx: ${positionIdx})`, LOG_LEVEL.INFO);
 
     // Ensure entryPrice is properly converted to number
     entryPrice = parseFloat(entryPrice);
@@ -541,6 +549,7 @@ async function takeProfit(symbol, position) {
                     symbol: symbol,
                     takeProfit: takeProfitStr,
                     stopLoss: stopLossStr,
+                    positionIdx: positionIdx
                 });
                 //console.log(JSON.stringify(order, null, 4));
 
@@ -564,6 +573,7 @@ async function takeProfit(symbol, position) {
                         symbol: symbol,
                         takeProfit: priceStr,
                         stopLoss: stopLossStr,
+                        positionIdx: positionIdx
                     });
                     logIT(`TAKE PROFIT FAILED FOR ${symbol} WITH ERROR PRICE MOVING TOO FAST OR ORDER ALREADY CLOSED, TRYING TO FILL AT BID/ASK!!`, LOG_LEVEL.WARNING);
                 }
@@ -582,6 +592,7 @@ async function takeProfit(symbol, position) {
                     category: 'linear',
                     symbol: symbol,
                     takeProfit: takeProfitStr,
+                    positionIdx: positionIdx
                 });
                 //console.log(JSON.stringify(order, null, 2));
                 if(order.retMsg === "OK" || order.retMsg === "not modified" || order.retCode === 130024) {
@@ -606,6 +617,7 @@ async function takeProfit(symbol, position) {
                         category: 'linear',
                         symbol: symbol,
                         takeProfit: priceStr,
+                        positionIdx: positionIdx
                     });
                     console.log(chalk.red("TAKE PROFIT FAILED FOR " + symbol + " WITH ERROR PRICE MOVING TOO FAST, TRYING TO FILL AT BID/ASK!!"));
                 }
