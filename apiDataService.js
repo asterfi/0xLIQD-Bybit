@@ -6,6 +6,7 @@
 import fetch from 'node-fetch';
 import fs from 'fs';
 import { logIT, LOG_LEVEL } from './log.js';
+import { calculateRiskPrices } from './utils.js';
 
 class APIDataService {
     constructor(restClient, discordService = null) {
@@ -131,14 +132,6 @@ class APIDataService {
 
             logIT(`Research data updated successfully: ${validData.length} valid items`, LOG_LEVEL.INFO);
 
-            // Notify Discord if enabled
-            if (this.discordService && process.env.USE_DISCORD === "true") {
-                await this.discordService.sendMessage(
-                    `📊 Research data updated: ${validData.length} trading pairs with smart settings`,
-                    'success'
-                );
-            }
-
             return true;
 
         } catch (error) {
@@ -230,14 +223,6 @@ class APIDataService {
             fs.writeFileSync('min_order_sizes.json', JSON.stringify(minOrderSizes, null, 4));
 
             logIT(`Minimum order sizes updated: ${processedCount} pairs processed`, LOG_LEVEL.INFO);
-
-            // Notify Discord if enabled
-            if (this.discordService && process.env.USE_DISCORD === "true") {
-                await this.discordService.sendMessage(
-                    `📏 Minimum order sizes updated: ${processedCount} trading pairs`,
-                    'success'
-                );
-            }
 
             return true;
 
@@ -335,14 +320,6 @@ class APIDataService {
 
             logIT(`Settings updated successfully: ${updatedCount} pairs configured`, LOG_LEVEL.INFO);
 
-            // Notify Discord if enabled
-            if (this.discordService && process.env.USE_DISCORD === "true") {
-                await this.discordService.sendMessage(
-                    `⚙️ Trading settings updated: ${updatedCount} pairs configured with smart settings`,
-                    'success'
-                );
-            }
-
             return true;
 
         } catch (error) {
@@ -353,22 +330,10 @@ class APIDataService {
 
     /**
      * Calculate risk-adjusted prices based on risk level
+     * Delegates to utils.js for consistent calculations
      */
     calculateRiskPrices(longPrice, shortPrice, riskLevel) {
-        const multipliers = {
-            1: { long: 1.005, short: 0.995 },
-            2: { long: 1.01, short: 0.99 },
-            3: { long: 1.02, short: 0.98 },
-            4: { long: 1.03, short: 0.97 },
-            5: { long: 1.04, short: 0.96 }
-        };
-
-        const mult = multipliers[riskLevel] || multipliers[2];
-
-        return {
-            long_risk: longPrice * mult.long,
-            short_risk: shortPrice * mult.short
-        };
+        return calculateRiskPrices(longPrice, shortPrice, riskLevel);
     }
 
     /**

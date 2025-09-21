@@ -17,7 +17,21 @@ import DiscordService from './discordService.js';
 import moment from 'moment';
 import { logIT, LOG_LEVEL, cleanupOldLogFiles } from './log.js';
 import { createMarketOrder } from './order.js';
-import { calculateRiskPrices, processOrderQuantity, shouldProcessPair, calculateBotUptime } from './utils.js';
+import {
+    calculateRiskPrices,
+    processOrderQuantity,
+    shouldProcessPair,
+    calculateBotUptime,
+    validatePositionData,
+    validateTradingConfig,
+    calculateProfitLossPrices,
+    getTickData,
+    formatPrice,
+    needsTpSlUpdate,
+    setTradingStopAPI,
+    adjustPriceForFastMarket,
+    handleTpSlResponse
+} from './utils.js';
 import APIDataService from './apiDataService.js';
 
 // Bot configuration and state
@@ -454,8 +468,7 @@ async function getBalance() {
     } catch (error) {
         logIT(`Error getting balance: ${error.message}`, LOG_LEVEL.ERROR);
         // For debugging, also log the full error
-        console.log("Balance fetch error details:", error);
-        return null;
+            return null;
     } finally {
         isGettingBalance = false;
     }
@@ -523,196 +536,108 @@ async function getPosition(pair, side) {
         return { side, entryPrice: null, size: 0, percentGain: 0 };
     }
 }
-//take profit
+//take profit - Refactored with utility functions
 async function takeProfit(symbol, position) {
-
-    //get entry price
-    var positions = await position;
-
-    // Check if we're in hedge mode
-    const hedgeMode = isHedgeMode();
-
-    // Calculate position index based on position side and hedge mode
-    let positionIdx = 0;
-    if (hedgeMode) {
-        positionIdx = positions.side === "Buy" ? 1 : 2; // 1 for hedge Buy, 2 for hedge Sell
-    } else {
-        positionIdx = 0; // 0 for one-way mode
-    }
-
-    // Check if positions has avgPrice (direct from API) or entryPrice (from getPosition function)
-    var entryPrice = positions.avgPrice || positions.entry_price || positions.entryPrice;
-
-    // Validate position data
-    if (!positions || !entryPrice || isNaN(entryPrice) || entryPrice <= 0) {
-        logIT(`Invalid position data for ${symbol}. Entry price: ${entryPrice}, Full position: ${JSON.stringify(positions, null, 2)}`, LOG_LEVEL.ERROR);
-        return;
-    }
-
-    logIT(`Setting TP/SL for ${symbol} (${positions.side}) in ${hedgeMode ? 'hedge' : 'one-way'} mode (positionIdx: ${positionIdx})`, LOG_LEVEL.INFO);
-
-    // Ensure entryPrice is properly converted to number
-    entryPrice = parseFloat(entryPrice);
-    if (isNaN(entryPrice) || entryPrice <= 0) {
-        logIT(`Invalid entry price conversion for ${symbol}. Entry price: ${entryPrice}, Type: ${typeof entryPrice}`, LOG_LEVEL.ERROR);
-        return;
-    }
-
-    // Update positions with the correct entry_price property
-    positions.entry_price = entryPrice;
-
-    // Parse and validate environment variables
-    const takeProfitPercent = parseFloat(process.env.TAKE_PROFIT_PERCENT);
-
-    if (isNaN(takeProfitPercent) || takeProfitPercent <= 0) {
-        logIT(`Invalid take profit percentage for ${symbol}. Take profit: ${takeProfitPercent}%`, LOG_LEVEL.ERROR);
-        return;
-    }
-
-    // Check if stop loss should be used
-    const useStopLoss = process.env.USE_STOPLOSS.toLowerCase() === "true";
-    var stopLoss = null;
-    var stopLossPercent = null;
-
-    if (useStopLoss) {
-        stopLossPercent = parseFloat(process.env.STOP_LOSS_PERCENT);
-        if (isNaN(stopLossPercent) || stopLossPercent <= 0) {
-            logIT(`Invalid stop loss percentage for ${symbol}. Stop loss: ${stopLossPercent}%`, LOG_LEVEL.ERROR);
-            return;
-        }
-    }
-
-    if (positions.side === "Buy") {
-        var side = "Buy";
-        var takeProfit = positions.entry_price + (positions.entry_price * (takeProfitPercent / 100));
-        if (useStopLoss) {
-            var stopLoss = positions.entry_price - (positions.entry_price * (stopLossPercent / 100));
-        }
-
-    }
-    else {
-        var side = "Sell";
-        var takeProfit = positions.entry_price - (positions.entry_price * (takeProfitPercent / 100));
-        if (useStopLoss) {
-            var stopLoss = positions.entry_price + (positions.entry_price * (stopLossPercent / 100));
-        }
-    }
-
-    // Validate calculated prices
-    if (isNaN(takeProfit) || takeProfit <= 0 || (useStopLoss && (isNaN(stopLoss) || stopLoss <= 0))) {
-        console.log(chalk.red(`Invalid calculated prices for ${symbol}. Take profit: ${takeProfit}, Stop loss: ${stopLoss}`));
-        return;
-    }
-
-    //load min order size json
-
-    const tickData = JSON.parse(fs.readFileSync('min_order_sizes.json', 'utf8'));
-
     try {
-        var index = tickData.findIndex(x => x.pair === symbol);
-        if (index === -1) {
-            console.log(chalk.red(`No tick data found for ${symbol}`));
+        // Validate position data and extract entry price
+        const positionData = await position;
+        const validationResult = validatePositionData(symbol, positionData);
+        if (!validationResult) return;
+
+        const { position: validatedPosition, entryPrice } = validationResult;
+
+        // Validate trading configuration
+        const config = validateTradingConfig();
+        if (!config) return;
+
+        const { takeProfitPercent, useStopLoss, stopLossPercent } = config;
+
+        // Calculate position index based on hedge mode
+        const hedgeMode = isHedgeMode();
+        const positionIdx = hedgeMode ? (validatedPosition.side === "Buy" ? 1 : 2) : 0;
+
+        logIT(`Setting TP/SL for ${symbol} (${validatedPosition.side}) in ${hedgeMode ? 'hedge' : 'one-way'} mode (positionIdx: ${positionIdx})`, LOG_LEVEL.INFO);
+
+        // Calculate TP/SL prices
+        const priceCalculation = calculateProfitLossPrices(
+            entryPrice,
+            validatedPosition.side,
+            takeProfitPercent,
+            stopLossPercent,
+            useStopLoss
+        );
+        if (!priceCalculation) return;
+
+        const { takeProfit, stopLoss } = priceCalculation;
+
+        // Get tick data for price formatting
+        const tickData = getTickData(symbol);
+        if (!tickData) return;
+
+        const { decimalPlaces } = tickData;
+
+        // Check if TP/SL update is needed
+        if (!needsTpSlUpdate(validatedPosition, takeProfit)) {
             return;
         }
-        var tickSize = tickData[index].tickSize;
-        var decimalPlaces = (tickSize.toString().split(".")[1] || []).length;
 
-        if (positions.size > 0 && (positions.take_profit === 0 || takeProfit !== positions.take_profit)) {
-            if (process.env.USE_STOPLOSS.toLowerCase() === "true") {
-                // Format prices as strings with correct decimal places
-                const takeProfitStr = takeProfit.toFixed(decimalPlaces);
-                const stopLossStr = stopLoss.toFixed(decimalPlaces);
+        // Format prices
+        const takeProfitStr = formatPrice(takeProfit, decimalPlaces);
+        const stopLossStr = useStopLoss ? formatPrice(stopLoss, decimalPlaces) : null;
 
-                logIT(`Setting take profit for ${symbol}: ${takeProfitStr}, stop loss: ${stopLossStr}`, LOG_LEVEL.INFO);
+        // Set TP/SL via API
+        await setTpSlWithRetry(
+            restClient,
+            symbol,
+            takeProfitStr,
+            stopLossStr,
+            positionIdx,
+            validatedPosition.side,
+            decimalPlaces,
+            useStopLoss
+        );
 
-                const order = await restClient.setTradingStop({
-                    category: 'linear',
-                    symbol: symbol,
-                    takeProfit: takeProfitStr,
-                    stopLoss: stopLossStr,
-                    positionIdx: positionIdx
-                });
+    } catch (error) {
+        logIT(`Error in takeProfit for ${symbol}: ${error.message}`, LOG_LEVEL.ERROR);
+    }
+}
 
-                if (order.retMsg === "OK" || order.retMsg === "not modified" || order.retCode === 10002) {
-                    //console.log(chalk.red("TAKE PROFIT ERROR: ", JSON.stringify(order, null, 2)));
-                }
-                else if (order.retCode === 130027 || order.retCode === 130030 || order.retCode === 130024) {
-                    //find current price
-                    var priceFetch = await restClient.getTickers({ category: 'linear', symbol: symbol });
-                    var price = priceFetch.result.list[0].lastPrice;
-                    //if side is sell add 1 tick to price
-                    if (side === "Sell") {
-                        price = parseFloat(priceFetch.result.list[0].ask1Price);
-                    }
-                    else {
-                        price = parseFloat(priceFetch.result.list[0].bid1Price);
-                    }
-                    const priceStr = price.toFixed(decimalPlaces);
-                    const order = await restClient.setTradingStop({
-                        category: 'linear',
-                        symbol: symbol,
-                        takeProfit: priceStr,
-                        stopLoss: stopLossStr,
-                        positionIdx: positionIdx
-                    });
-                    logIT(`TAKE PROFIT FAILED FOR ${symbol} WITH ERROR PRICE MOVING TOO FAST OR ORDER ALREADY CLOSED, TRYING TO FILL AT BID/ASK!!`, LOG_LEVEL.WARNING);
-                }
-                else {
-                    logIT(`TAKE PROFIT ERROR: ${JSON.stringify(order, null, 4)}`, LOG_LEVEL.ERROR);
-                }
+// Helper function to set TP/SL with retry logic for fast-moving markets
+async function setTpSlWithRetry(restClient, symbol, takeProfitStr, stopLossStr, positionIdx, side, decimalPlaces, useStopLoss) {
+    try {
+        // Initial attempt
+        const order = await setTradingStopAPI(restClient, symbol, takeProfitStr, stopLossStr, positionIdx);
+        const response = handleTpSlResponse(order, symbol, useStopLoss);
 
-            }
-            else {
-                // Format take profit as string with correct decimal places
-                const takeProfitStr = takeProfit.toFixed(decimalPlaces);
+        if (response.success) {
+            logIT(`TP/SL set successfully for ${symbol}`, LOG_LEVEL.INFO);
+            return;
+        }
 
-                logIT(`Setting take profit for ${symbol}: ${takeProfitStr}`, LOG_LEVEL.INFO);
+        if (response.needsRetry) {
+            logIT(`Retrying TP/SL for ${symbol} due to fast-moving market`, LOG_LEVEL.WARNING);
 
-                const order = await restClient.setTradingStop({
-                    category: 'linear',
-                    symbol: symbol,
-                    takeProfit: takeProfitStr,
-                    positionIdx: positionIdx
-                });
-                if (order.retMsg === "OK" || order.retMsg === "not modified" || order.retCode === 130024) {
-                    //console.log(chalk.red("TAKE PROFIT ERROR: ", JSON.stringify(order, null, 2)));
-                }
-                else if (order.retCode === 130027 || order.retCode === 130030) {
-                    logIT(`TAKE PROFIT FAILED PRICING MOVING FAST!! TRYING TO PLACE ABOVE CURRENT PRICE!!`, LOG_LEVEL.WARNING);
-                    //find current price
-                    var priceFetch = await restClient.getTickers({ category: 'linear', symbol: symbol });
-                    console.log("Current price: " + JSON.stringify(priceFetch, null, 4));
-                    var price = priceFetch.result.list[0].lastPrice;
-                    //if side is sell add 1 tick to price
-                    if (side === "Sell") {
-                        price = priceFetch.result.list[0].ask1Price
-                    }
-                    else {
-                        price = priceFetch.result.list[0].bid1Price
-                    }
-                    console.log("Price for symbol " + symbol + " is " + price);
-                    const priceStr = price.toFixed(decimalPlaces);
-                    const order = await restClient.setTradingStop({
-                        category: 'linear',
-                        symbol: symbol,
-                        takeProfit: priceStr,
-                        positionIdx: positionIdx
-                    });
-                    console.log(chalk.red("TAKE PROFIT FAILED FOR " + symbol + " WITH ERROR PRICE MOVING TOO FAST, TRYING TO FILL AT BID/ASK!!"));
-                }
-                else {
-                    console.log(chalk.red("TAKE PROFIT ERROR: ", JSON.stringify(order, null, 2)));
+            // Adjust price for fast-moving market
+            const adjustedPriceStr = await adjustPriceForFastMarket(restClient, symbol, side, decimalPlaces);
+            if (adjustedPriceStr) {
+                const retryOrder = await setTradingStopAPI(restClient, symbol, adjustedPriceStr, stopLossStr, positionIdx);
+                const retryResponse = handleTpSlResponse(retryOrder, symbol, useStopLoss);
+
+                if (retryResponse.success) {
+                    logIT(`TP/SL set successfully on retry for ${symbol}`, LOG_LEVEL.INFO);
+                    return;
                 }
             }
         }
-        else {
-            console.log("No take profit to set for " + symbol);
-        }
-    }
-    catch (e) {
-        console.log(chalk.red("Error setting take profit: " + e + " for symbol " + symbol));
-    }
 
+        // Log final error if all attempts failed
+        if (!response.success) {
+            logIT(`Failed to set TP/SL for ${symbol}: ${response.error}`, LOG_LEVEL.ERROR);
+        }
+
+    } catch (error) {
+        logIT(`Error in setTpSlWithRetry for ${symbol}: ${error.message}`, LOG_LEVEL.ERROR);
+    }
 }
 //fetch how how openPositions there are
 async function totalOpenPositions() {
@@ -1409,8 +1334,7 @@ async function getMinTradingSize() {
     } catch (error) {
         logIT(`Error in getMinTradingSize: ${error.message}`, LOG_LEVEL.ERROR);
         // For debugging purposes, also log the error to console
-        console.log("Error details:", error);
-        throw error;
+          throw error;
     }
 }
 //get all symbols
@@ -1449,8 +1373,7 @@ function readResearchFile() {
             return JSON.parse(fs.readFileSync('research.json'));
         }
     } catch (err) {
-        console.log(chalk.red("Error reading research.json:", err));
-    }
+          }
     return null;
 }
 //auto create settings.json file
@@ -1495,8 +1418,7 @@ async function createSettings() {
             var settings = {};
             settings["pairs"] = [];
             for (var i = 0; i < out.data.length; i++) {
-                //console.log("Adding Smart Settings for " + out.data[i].name + " to settings.json");
-                //if name contains 1000 or does not end in USDT, skip
+                  //if name contains 1000 or does not end in USDT, skip
                 if (out.data[i].name.includes("1000")) {
                     continue;
                 }
@@ -1539,8 +1461,7 @@ async function createSettings() {
                 var settings = {};
                 settings["pairs"] = [];
                 for (var i = 0; i < researchFile.data.length; i++) {
-                    //console.log("Adding Smart Settings for " + researchFile.data[i].name + " to settings.json");
-                    //if name contains 1000 or does not end in USDT, skip
+                      //if name contains 1000 or does not end in USDT, skip
                     if (researchFile.data[i].name.includes("1000")) {
                         continue;
                     }
@@ -1551,37 +1472,11 @@ async function createSettings() {
                             continue;
                         }
                         else {
-                            //risk level
-                            var riskLevel = process.env.RISK_LEVEL;
-                            if (riskLevel == 1) {
-                                //add 0.5% to long_price and subtract 0.5% from short_price
-                                var long_risk = researchFile.data[i].long_price * 1.005
-                                var short_risk = researchFile.data[i].short_price * 0.995
-                            }
-                            else if (riskLevel == 2) {
-                                //calculate price 1% below current price and1% above current price
-                                var long_risk = researchFile.data[i].long_price * 1.01
-                                var short_risk = researchFile.data[i].short_price * 0.99
-                            }
-                            else if (riskLevel == 3) {
-                                //calculate price 2% below current price and 2% above current price
-                                var long_risk = researchFile.data[i].long_price * 1.02
-                                var short_risk = researchFile.data[i].short_price * 0.98
-                            }
-                            else if (riskLevel == 4) {
-                                //calculate price 3% below current price and 3% above current price
-                                var long_risk = researchFile.data[i].long_price * 1.03
-                                var short_risk = researchFile.data[i].short_price * 0.97
-                            }
-                            else if (riskLevel == 5) {
-                                //calculate price 4% below current price and 4% above current price
-                                var long_risk = researchFile.data[i].long_price * 1.04
-                                var short_risk = researchFile.data[i].short_price * 0.96
-                            }
-                            else {
-                                var long_risk = researchFile.data[i].long_price;
-                                var short_risk = researchFile.data[i].short_price;
-                            }
+                            // Calculate risk-adjusted prices using utility function
+                            const riskLevel = parseInt(process.env.RISK_LEVEL) || 2;
+                            const riskPrices = calculateRiskPrices(researchFile.data[i].long_price, researchFile.data[i].short_price, riskLevel);
+                            const long_risk = riskPrices.long_risk;
+                            const short_risk = riskPrices.short_risk;
 
                             var pair = {
                                 "symbol": researchFile.data[i].name + "USDT",
@@ -1662,8 +1557,7 @@ async function updateSettings() {
                         var index = minOrderSizes.findIndex(x => x.pair === out.data[i].name + "USDT");
                         var settingsIndex = settingsFile.pairs.findIndex(x => x.symbol === out.data[i].name + "USDT");
                         if (index === -1 || settingsIndex === 'undefined' || out.data[i].name.includes("1000")) {
-                            //console.log("Skipping " + out.data[i].name + "USDT");
-                        }
+                                    }
                         else {
                             // Calculate risk-adjusted prices using utility function
                             const riskLevel = parseInt(process.env.RISK_LEVEL) || 2;
@@ -1694,8 +1588,7 @@ async function updateSettings() {
                                 var settingsIndex = settingsFile.pairs.findIndex(x => x.symbol === researchFile.data[i].name + "USDT");
                                 try {
                                     if (index === -1 || settingsIndex === 'undefined' || researchFile.data[i].name.includes("1000")) {
-                                        //console.log("Skipping " + researchFile.data[i].name + "USDT");
-                                    }
+                                      }
                                     else {
                                         // Calculate risk-adjusted prices using utility function
                                         const riskLevel = parseInt(process.env.RISK_LEVEL) || 2;

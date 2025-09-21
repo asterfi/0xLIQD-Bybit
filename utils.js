@@ -70,3 +70,153 @@ export function calculateBotUptime(uptimeSeconds) {
     var times = [parseInt(elapsedDays), parseInt(elapsedHours), parseInt(elapsedMinutes), parseInt(elapsedSeconds)];
     return times;
 }
+
+// Utility function to validate position data and extract entry price
+export function validatePositionData(symbol, position) {
+    const entryPrice = position.avgPrice || position.entry_price || position.entryPrice;
+
+    if (!position || !entryPrice || isNaN(entryPrice) || entryPrice <= 0) {
+        logIT(`Invalid position data for ${symbol}. Entry price: ${entryPrice}, Full position: ${JSON.stringify(position, null, 2)}`, LOG_LEVEL.ERROR);
+        return null;
+    }
+
+    const parsedEntryPrice = parseFloat(entryPrice);
+    if (isNaN(parsedEntryPrice) || parsedEntryPrice <= 0) {
+        logIT(`Invalid entry price conversion for ${symbol}. Entry price: ${parsedEntryPrice}, Type: ${typeof parsedEntryPrice}`, LOG_LEVEL.ERROR);
+        return null;
+    }
+
+    // Update position with the correct entry_price property
+    position.entry_price = parsedEntryPrice;
+
+    return { position, entryPrice: parsedEntryPrice };
+}
+
+// Utility function to parse and validate trading configuration
+export function validateTradingConfig() {
+    const takeProfitPercent = parseFloat(process.env.TAKE_PROFIT_PERCENT);
+
+    if (isNaN(takeProfitPercent) || takeProfitPercent <= 0) {
+        logIT(`Invalid take profit percentage. Take profit: ${takeProfitPercent}%`, LOG_LEVEL.ERROR);
+        return null;
+    }
+
+    const useStopLoss = process.env.USE_STOPLOSS.toLowerCase() === "true";
+    let stopLossPercent = null;
+
+    if (useStopLoss) {
+        stopLossPercent = parseFloat(process.env.STOP_LOSS_PERCENT);
+        if (isNaN(stopLossPercent) || stopLossPercent <= 0) {
+            logIT(`Invalid stop loss percentage. Stop loss: ${stopLossPercent}%`, LOG_LEVEL.ERROR);
+            return null;
+        }
+    }
+
+    return { takeProfitPercent, useStopLoss, stopLossPercent };
+}
+
+// Utility function to calculate TP/SL prices based on position side
+export function calculateProfitLossPrices(entryPrice, side, takeProfitPercent, stopLossPercent, useStopLoss) {
+    let takeProfit, stopLoss;
+
+    if (side === "Buy") {
+        takeProfit = entryPrice + (entryPrice * (takeProfitPercent / 100));
+        if (useStopLoss) {
+            stopLoss = entryPrice - (entryPrice * (stopLossPercent / 100));
+        }
+    } else {
+        takeProfit = entryPrice - (entryPrice * (takeProfitPercent / 100));
+        if (useStopLoss) {
+            stopLoss = entryPrice + (entryPrice * (stopLossPercent / 100));
+        }
+    }
+
+    // Validate calculated prices
+    if (isNaN(takeProfit) || takeProfit <= 0 || (useStopLoss && (isNaN(stopLoss) || stopLoss <= 0))) {
+        console.log(chalk.red(`Invalid calculated prices. Take profit: ${takeProfit}, Stop loss: ${stopLoss}`));
+        return null;
+    }
+
+    return { takeProfit, stopLoss };
+}
+
+// Utility function to get tick data for a symbol
+export function getTickData(symbol) {
+    try {
+        const tickData = JSON.parse(fs.readFileSync('min_order_sizes.json', 'utf8'));
+        const index = tickData.findIndex(x => x.pair === symbol);
+
+        if (index === -1) {
+            console.log(chalk.red(`No tick data found for ${symbol}`));
+            return null;
+        }
+
+        return {
+            tickSize: tickData[index].tickSize,
+            decimalPlaces: (tickData[index].tickSize.toString().split(".")[1] || []).length
+        };
+    } catch (error) {
+        logIT(`Error reading tick data for ${symbol}: ${error.message}`, LOG_LEVEL.ERROR);
+        return null;
+    }
+}
+
+// Utility function to format price with correct decimal places
+export function formatPrice(price, decimalPlaces) {
+    return price.toFixed(decimalPlaces);
+}
+
+// Utility function to check if TP/SL update is needed
+export function needsTpSlUpdate(position, takeProfit) {
+    return position.size > 0 && (position.take_profit === 0 || takeProfit !== position.take_profit);
+}
+
+// Utility function to set TP/SL via API
+export async function setTradingStopAPI(restClient, symbol, takeProfitStr, stopLossStr, positionIdx) {
+    const params = {
+        category: 'linear',
+        symbol: symbol,
+        takeProfit: takeProfitStr,
+        positionIdx: positionIdx
+    };
+
+    if (stopLossStr) {
+        params.stopLoss = stopLossStr;
+    }
+
+    return await restClient.setTradingStop(params);
+}
+
+// Utility function to handle price adjustment for fast-moving markets
+export async function adjustPriceForFastMarket(restClient, symbol, side, decimalPlaces) {
+    try {
+        const priceFetch = await restClient.getTickers({ category: 'linear', symbol: symbol });
+        let price;
+
+        if (side === "Sell") {
+            price = parseFloat(priceFetch.result.list[0].ask1Price);
+        } else {
+            price = parseFloat(priceFetch.result.list[0].bid1Price);
+        }
+
+        return price.toFixed(decimalPlaces);
+    } catch (error) {
+        logIT(`Error adjusting price for ${symbol}: ${error.message}`, LOG_LEVEL.ERROR);
+        return null;
+    }
+}
+
+// Utility function to handle API response for TP/SL operations
+export function handleTpSlResponse(order, symbol, useStopLoss) {
+    if (order.retMsg === "OK" || order.retMsg === "not modified" || order.retCode === 10002 || order.retCode === 130024) {
+        return { success: true, needsRetry: false };
+    }
+
+    // Handle fast-moving market errors
+    if (order.retCode === 130027 || order.retCode === 130030 || order.retCode === 130024) {
+        return { success: false, needsRetry: true, error: "Price moving too fast" };
+    }
+
+    // Handle other errors
+    return { success: false, needsRetry: false, error: order.retMsg || "Unknown error" };
+}
