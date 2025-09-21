@@ -27,6 +27,7 @@ const key = process.env.API_KEY;
 const secret = process.env.API_SECRET;
 const rateLimit = 2000; // Base rate limit between API calls
 const lastReport = 0; // Timestamp for last Discord report
+let isGettingBalance = false; // Prevent recursive balance calls
 const pairs = []; // Array of trading pairs to monitor
 const liquidationOrders = []; // Cache of recent liquidation events
 const lastUpdate = 0; // Timestamp for last settings update
@@ -389,32 +390,95 @@ function getReportInterval() {
  * @returns {number|null} Available balance in USDT or null on error
  */
 async function getBalance() {
+    const startTime = Date.now();
+    const TIMEOUT_MS = 30000; // 30 second timeout for balance fetching
+
     try {
-        const data = await restClient.getWalletBalance({ accountType: 'UNIFIED', coin: 'USDT' });
-        const availableBalance = data.result.list[0].totalAvailableBalance;
-        const balance = parseFloat(availableBalance);
+        // Prevent recursive balance calls
+        if (isGettingBalance) {
+            logIT("Already getting balance, skipping recursive call", LOG_LEVEL.WARNING);
+            return null;
+        }
+        isGettingBalance = true;
 
-        // Load and update account configuration
-        const accountConfig = JSON.parse(fs.readFileSync('account.json', 'utf8'));
-
-        // Set starting balance if not already configured
-        if (accountConfig.startingBalance === 0) {
-            accountConfig.startingBalance = balance;
-            fs.writeFileSync('account.json', JSON.stringify(accountConfig, null, 4));
-            logIT(`Starting balance set to: ${balance} USDT`, LOG_LEVEL.INFO);
+        // First test basic API connectivity with server time
+        try {
+            logIT("Testing API connectivity...", LOG_LEVEL.INFO);
+            const serverTime = await Promise.race([
+                restClient.getServerTime(),
+                new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('API connectivity test timeout')), TIMEOUT_MS)
+                )
+            ]);
+            const connectivityTime = Date.now() - startTime;
+            logIT(`API connectivity test successful (${connectivityTime}ms)`, LOG_LEVEL.INFO);
+        } catch (connectivityError) {
+            logIT(`API connectivity test failed: ${connectivityError.message}`, LOG_LEVEL.ERROR);
+            throw new Error("Cannot connect to Bybit API - check internet connection and API credentials");
         }
 
-        // Check if periodic report is due
-        const reportInterval = getReportInterval();
-        if (Date.now() - lastReport > reportInterval) {
-            await reportWebhook();
-            lastReport = Date.now();
+        // Get wallet balance with better error handling and logging
+        logIT("Fetching wallet balance from Bybit API...", LOG_LEVEL.INFO);
+
+        try {
+            const data = await Promise.race([
+                restClient.getWalletBalance({ accountType: 'UNIFIED', coin: 'USDT' }),
+                new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Balance API call timeout')), TIMEOUT_MS)
+                )
+            ]);
+
+            const apiTime = Date.now() - startTime;
+            logIT("API response received for balance", LOG_LEVEL.INFO);
+            logIT(`API call took ${apiTime}ms`, LOG_LEVEL.DEBUG);
+
+            if (!data || !data.result || !data.result.list || data.result.list.length === 0) {
+                throw new Error("Invalid balance data received from API");
+            }
+
+            const availableBalance = data.result.list[0].totalAvailableBalance;
+            logIT(`Raw balance data: ${availableBalance}`, LOG_LEVEL.DEBUG);
+
+            const balance = parseFloat(availableBalance);
+
+            if (isNaN(balance) || balance < 0) {
+                throw new Error("Invalid balance value: " + availableBalance);
+            }
+
+            const totalTime = Date.now() - startTime;
+            logIT(`Successfully parsed balance: ${balance} USDT (${totalTime}ms total)`, LOG_LEVEL.INFO);
+
+        } catch (apiError) {
+            const totalTime = Date.now() - startTime;
+            logIT(`Bybit API balance fetch failed: ${apiError.message} (${totalTime}ms)`, LOG_LEVEL.ERROR);
+            if (apiError.code) {
+                logIT(`API Error code: ${apiError.code}`, LOG_LEVEL.ERROR);
+            }
+            throw apiError;
+        }
+
+        // Update account configuration asynchronously (don't block balance return)
+        try {
+            const accountConfig = JSON.parse(fs.readFileSync('account.json', 'utf8'));
+
+            // Set starting balance if not already configured
+            if (accountConfig.startingBalance === 0) {
+                accountConfig.startingBalance = balance;
+                fs.writeFileSync('account.json', JSON.stringify(accountConfig, null, 4));
+                logIT(`Starting balance set to: ${balance} USDT`, LOG_LEVEL.INFO);
+            }
+        } catch (fileError) {
+            logIT(`Error updating account configuration: ${fileError.message}`, LOG_LEVEL.WARNING);
         }
 
         return balance;
     } catch (error) {
         logIT(`Error getting balance: ${error.message}`, LOG_LEVEL.ERROR);
+        // For debugging, also log the full error
+        console.log("Balance fetch error details:", error);
         return null;
+    } finally {
+        isGettingBalance = false;
     }
 }
 /**
