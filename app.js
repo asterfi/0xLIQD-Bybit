@@ -144,53 +144,6 @@ async function liquidationEngine(pairs) {
     wsClient.subscribeV5(pairs, 'linear');
 }
 
-async function transferFunds(amount) {
-    if (!amount || amount <= 0) {
-        logIT(`Invalid transfer amount: ${amount}`, LOG_LEVEL.WARNING);
-        return false;
-    }
-
-    try {
-        const transfer = await restClient.createInternalTransfer({
-            transferId: await generateTransferId(),
-            coin: 'USDT',
-            amount: amount.toFixed(2),
-            fromAccountType: 'CONTRACT',
-            toAccountType: 'SPOT',
-        });
-
-        if (transfer.retCode === 0) {
-            logIT(`Successfully transferred ${amount.toFixed(2)} USDT from CONTRACT to SPOT`, LOG_LEVEL.INFO);
-            if (process.env.USE_DISCORD == "true") {
-                discordService.sendMessage(`Transferred ${amount.toFixed(2)} USDT to SPOT wallet`, 'success');
-            }
-            return true;
-        } else {
-            logIT(`Transfer failed: ${transfer.retMsg} (Error Code: ${transfer.retCode})`, LOG_LEVEL.ERROR);
-            return false;
-        }
-    } catch (error) {
-        logIT(`Error during transfer: ${error.message}`, LOG_LEVEL.ERROR);
-        return false;
-    }
-}
-
-// WITHDRAWAL FUNCTION DECOMMISSIONED - No longer needed
-// Old withdrawal functionality has been removed as it's not required for the trading bot
-
-//Generate transferId
-async function generateTransferId() {
-    const hexDigits = "0123456789abcdefghijklmnopqrstuvwxyz";
-    let transferId = "";
-    for (let i = 0; i < 32; i++) {
-      transferId += hexDigits.charAt(Math.floor(Math.random() * 16));
-      if (i === 7 || i === 11 || i === 15 || i === 19) {
-        transferId += "-";
-      }
-    }
-    return transferId;
-}
-
 //Get server time
 async function getServerTime() {
     const data = await restClient.getServerTime();
@@ -253,26 +206,6 @@ async function getBalance() {
         else {
             var startingBalance = settings.startingBalance;
         }
-
-        var diff = balance - startingBalance;
-        var percentGain = (diff / startingBalance) * 100;
-
-        //check for gain to safe amount to spot
-        if (diff >= settings.BalanceToSpot && settings.BalanceToSpot > 0 && process.env.TRANSFER_TO_SPOT == "false"){
-            transferFunds(diff)
-            console.log("Moved " + diff + " to SPOT")
-        }
-
-        // Transfer functionality for moving funds to SPOT is handled by transferFunds() when profit thresholds are reached
-
-        //if positive diff then log green
-        // if (diff >= 0) {
-        //     console.log(chalk.greenBright.bold("Profit: " + diff.toFixed(4) + " USDT" + " (" + percentGain.toFixed(2) + "%)") + " | " + chalk.magentaBright.bold("Balance: " + balance.toFixed(4) + " USDT"));
-        // }
-        // else {
-        //     console.log(chalk.redBright.bold("Profit: " + diff.toFixed(4) + " USDT" + " (" + percentGain.toFixed(2) + "%)") + "  " + chalk.magentaBright.bold("Balance: " + balance.toFixed(4) + " USDT"));
-
-        // }
 
         //check when last was more than configured interval
         const reportInterval = getReportInterval();

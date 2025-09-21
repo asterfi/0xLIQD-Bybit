@@ -89,7 +89,7 @@ MAX_POSITION_SIZE_PERCENT = 33           # Max position size as % of total equit
 PERCENT_ORDER_SIZE = 10                  # Order size as % of equity (0.01 = 1%)
 MIN_LIQUIDATION_VOLUME = 1500           # Minimum liquidation volume in USDT to trigger trades
 USE_DCA_FEATURE = true                  # Enable DCA (Dollar Cost Averaging) for existing positions
-RISK_LEVEL = 2                          # Risk level for smart settings (1=conservative, 5=aggressive)
+RISK_LEVEL = 2                          # Risk level for smart settings (1=conservative, 5=aggressive, 0=disable)
 UPDATE_MIN_ORDER_SIZING = true           # Auto-update min order sizes based on balance
 USE_SET_LEVERAGE = true                  # Automatically set leverage on all pairs
 MARGIN = CROSS                          # Margin mode (CROSS/ISOLATED) - currently not implemented
@@ -113,12 +113,6 @@ USE_SMART_SETTINGS = true                # Use AI-powered smart settings from li
 BLACKLIST = ETHUSDT, BTCUSDT, C98USDT    # Pairs to exclude from trading
 USE_WHITELIST = false                    # If true, only trade pairs in WHITELIST
 WHITELIST = ETCUSDT, BCHUSDT, LINKUSDT   # Whitelist pairs (only active when USE_WHITELIST=true)
-```
-
-#### Fund Management
-```
-TRANSFER_TO_SPOT = false                # Enable profit transfer to SPOT account
-AMOUNT_TO_SPOT = 10                     # Minimum profit amount to transfer to SPOT
 ```
 
 #### Discord Integration
