@@ -28,7 +28,7 @@ const secret = process.env.API_SECRET;
 const rateLimit = 2000; // Base rate limit between API calls
 const lastReport = 0; // Timestamp for last Discord report
 let isGettingBalance = false; // Prevent recursive balance calls
-const pairs = []; // Array of trading pairs to monitor
+let pairs = []; // Array of trading pairs to monitor
 const liquidationOrders = []; // Cache of recent liquidation events
 const lastUpdate = 0; // Timestamp for last settings update
 
