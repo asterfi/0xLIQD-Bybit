@@ -21,16 +21,16 @@ import { createPositionFromOrder } from './position.js';
 import { calculateRiskPrices, processOrderQuantity, shouldProcessPair, calculateBotUptime } from './utils.js';
 
 // Bot configuration and state
-const timestampBotStart = moment(); // Bot start time for uptime calculation
+let timestampBotStart = moment(); // Bot start time for uptime calculation
 
 const key = process.env.API_KEY;
 const secret = process.env.API_SECRET;
-const rateLimit = 2000; // Base rate limit between API calls
-const lastReport = 0; // Timestamp for last Discord report
+let rateLimit = 2000; // Base rate limit between API calls
+let lastReport = 0; // Timestamp for last Discord report
 let isGettingBalance = false; // Prevent recursive balance calls
 let pairs = []; // Array of trading pairs to monitor
-const liquidationOrders = []; // Cache of recent liquidation events
-const lastUpdate = 0; // Timestamp for last settings update
+let liquidationOrders = []; // Cache of recent liquidation events
+let lastUpdate = 0; // Timestamp for last settings update
 
 // Initialize Discord service if enabled
 const discordService = process.env.USE_DISCORD === "true" ? new DiscordService(process.env.DISCORD_URL) : null;
