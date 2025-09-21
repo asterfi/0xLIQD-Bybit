@@ -5,6 +5,17 @@ class DiscordService {
         this.webhookClient = new WebhookClient({ url: webhookUrl });
     }
 
+    async close() {
+        try {
+            if (this.webhookClient) {
+                await this.webhookClient.destroy();
+                console.log("Discord webhook client closed");
+            }
+        } catch (error) {
+            console.error("Error closing Discord webhook client:", error.message);
+        }
+    }
+
     async sendOrderNotification(symbol, amount, side, position, pnl, qty) {
         try {
             const isBuy = side === "Buy";
@@ -96,9 +107,14 @@ class DiscordService {
                 });
             }
 
-            await this.webhookClient.send({ embeds: [embed] });
+            // Send with timeout protection
+            await Promise.race([
+                this.webhookClient.send({ embeds: [embed] }),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Discord webhook timeout')), 15000))
+            ]);
         } catch (err) {
             console.error("Discord Webhook Error:", err);
+            throw err; // Re-throw to be caught by caller
         }
     }
 }

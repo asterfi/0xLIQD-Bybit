@@ -1630,6 +1630,7 @@ function messageWebhook(message, type = 'info') {
 //report webhook
 async function reportWebhook() {
     if (process.env.USE_DISCORD == "true") {
+        console.log("Starting Discord report generation...");
         const settings = JSON.parse(fs.readFileSync('account.json', 'utf8'));
         //check if starting balance is set
         if (settings.startingBalance === 0) {
@@ -1647,71 +1648,104 @@ async function reportWebhook() {
         const times = calculateBotUptime(timeUptimeInSeconds);
 
         //fetch balance
+        console.log("Fetching balance for report...");
         var balance = await getBalance();
         var diff = balance - startingBalance;
         var percentGain = (diff / startingBalance) * 100;
         var percentGain = percentGain.toFixed(6);
         var diff = diff.toFixed(6);
         var balance = balance.toFixed(2);
-        //fetch positions
-        var positions = await restClient.getPositionInfo({ category: 'linear', settleCoin: 'USDT' });
+        console.log(`Balance: ${balance}, P&L: ${diff} (${percentGain}%)`);
+
+        //fetch positions with timeout protection
+        console.log("Fetching positions for report...");
+        var positions;
+        try {
+            positions = await Promise.race([
+                restClient.getPositionInfo({ category: 'linear', settleCoin: 'USDT' }),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout fetching positions')), 10000))
+            ]);
+            console.log(`Found ${positions.result?.list?.length || 0} positions`);
+        } catch (error) {
+            console.log(`Error fetching positions: ${error.message}, using empty position list`);
+            positions = { result: { list: [] } };
+        }
         var positionList = [];
         var openPositions = await totalOpenPositions();
         if (openPositions === null) {
             openPositions = 0;
         }
+        console.log("Fetching margin and server time...");
         var marg = await getMargin();
         var time = await getServerTime();
-        console.log(positions.result.list);
+        console.log("Processing positions...");
+
         //loop through positions.result.list get open symbols with size > 0 calculate pnl and to array
         for (var i = 0; i < positions.result.list.length; i++) {
             if (positions.result.list[i].size > 0) {
+                try {
+                    var pnl1 = positions.result.list[i].unrealisedPnl;
+                    var pnl = parseFloat(pnl1).toFixed(6);
+                    var symbol = positions.result.list[i].symbol;
+                    var size = positions.result.list[i].size;
+                    var liq = positions.result.list[i].liqPrice;
+                    var size = parseFloat(size).toFixed(4);
+                    var ios = positions.result.list[i].isIsolated;
 
-                var pnl1 = positions.result.list[i].unrealisedPnl;
-                var pnl = parseFloat(pnl1).toFixed(6);
-                var symbol = positions.result.list[i].symbol;
-                var size = positions.result.list[i].size;
-                var liq = positions.result.list[i].liqPrice;
-                var size = parseFloat(size).toFixed(4);
-                var ios = positions.result.list[i].isIsolated;
+                    console.log(`Processing position: ${symbol}, size: ${size}`);
 
-                var priceFetch = await restClient.getTickers({ category: 'linear', symbol: symbol });
-                var test = priceFetch.result.list[0].lastPrice;
+                    // Get current price with timeout protection
+                    var priceFetch;
+                    try {
+                        priceFetch = await Promise.race([
+                            restClient.getTickers({ category: 'linear', symbol: symbol }),
+                            new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout fetching price')), 5000))
+                        ]);
+                        var test = priceFetch.result.list[0].lastPrice;
+                    } catch (error) {
+                        console.log(`Error fetching price for ${symbol}: ${error.message}, using 0`);
+                        var test = 0;
+                    }
 
-                let side = positions.result.list[i].side;
-                var dir = "";
-                if (side === "Buy") {
-                    dir = "✅Long / ❌Short";
-                } else {
-                    dir = "❌Long / ✅Short";
+                                  let side = positions.result.list[i].side;
+                    var dir = "";
+                    if (side === "Buy") {
+                        dir = "✅Long / ❌Short";
+                    } else {
+                        dir = "❌Long / ✅Short";
+                    }
+
+                    var stop_loss = positions.result.list[i].stopLoss;
+                    var take_profit = positions.result.list[i].takeProfit;
+                    var price = positions.result.list[i].avgPrice;
+                    var fee = positions.result.list[i].occClosingFee;
+                    var price = parseFloat(price).toFixed(4);
+                    //calulate size in USDT
+                    var usdValue = (positions.result.list[i].avgPrice * size) / process.env.LEVERAGE;
+                    var position = {
+                        "symbol": symbol,
+                        "size": size,
+                        "side": dir,
+                        "sizeUSD": usdValue.toFixed(3),
+                        "pnl": pnl,
+                        "liq": liq,
+                        "price": price,
+                        "stop_loss": stop_loss,
+                        "take_profit": take_profit,
+                        "iso": ios,
+                        "test": test,
+                        "fee": parseFloat(fee).toFixed(3)
+                    }
+                    positionList.push(position);
+                    console.log(`Added position to list: ${symbol}, P&L: ${pnl}`);
+                } catch (error) {
+                    console.log(`Error processing position ${symbol}: ${error.message}`);
                 }
-
-                var stop_loss = positions.result.list[i].stopLoss;
-                var take_profit = positions.result.list[i].takeProfit;
-                var price = positions.result.list[i].avgPrice;
-                var fee = positions.result.list[i].occClosingFee;
-                var price = parseFloat(price).toFixed(4);
-                //calulate size in USDT
-                var usdValue = (positions.result.list[i].avgPrice * size) / process.env.LEVERAGE;
-                var position = {
-                    "symbol": symbol,
-                    "size": size,
-                    "side": dir,
-                    "sizeUSD": usdValue.toFixed(3),
-                    "pnl": pnl,
-                    "liq": liq,
-                    "price": price,
-                    "stop_loss": stop_loss,
-                    "take_profit": take_profit,
-                    "iso": ios,
-                    "test": test,
-                    "fee": parseFloat(fee).toFixed(3)
-                }
-                positionList.push(position);
             }
         }
 
         const uptimeString = times[0].toString() + " days " + times[1].toString() + " hr. " + times[2].toString() + " min. " + times[3].toString() + " sec.";
+        console.log(`Sending Discord report with ${positionList.length} positions...`);
 
         try {
             await discordService.sendReport(
@@ -1725,14 +1759,15 @@ async function reportWebhook() {
                 positionList,
                 openPositions
             );
+            console.log("Discord report sent successfully");
         }
         catch (err) {
             console.log(chalk.red("Discord Webhook Error"));
             console.log(err);
         }
+        console.log("Discord report generation completed");
     }
 }
-
 
 async function main() {
     console.log("Starting 0xLIQD-BYBIT...");
