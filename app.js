@@ -27,6 +27,7 @@ const secret = process.env.API_SECRET;
 let rateLimit = 2000; // Base rate limit between API calls
 let lastReport = 0; // Timestamp for last Discord report
 let isGettingBalance = false; // Prevent recursive balance calls
+let isGeneratingReport = false; // Prevent recursive Discord report calls
 let pairs = []; // Array of trading pairs to monitor
 let liquidationOrders = []; // Cache of recent liquidation events
 let lastUpdate = 0; // Timestamp for last settings update
@@ -1630,6 +1631,17 @@ function messageWebhook(message, type = 'info') {
 //report webhook
 async function reportWebhook() {
     if (process.env.USE_DISCORD == "true") {
+        // Prevent infinite recursion
+        if (isGeneratingReport) {
+            console.log("Discord report already being generated, skipping to prevent infinite loop");
+            return;
+        }
+        isGeneratingReport = true;
+
+        // Additional safety - ensure flag gets reset even on early exit
+        const safetyReset = () => {
+            isGeneratingReport = false;
+        };
         console.log("Starting Discord report generation...");
         const settings = JSON.parse(fs.readFileSync('account.json', 'utf8'));
         //check if starting balance is set
@@ -1641,6 +1653,8 @@ async function reportWebhook() {
         else {
             var startingBalance = settings.startingBalance;
         }
+
+        // Safety reset in case of early returns
 
         //get current timestamp and calculate bot uptime
         const timestampNow = moment();
@@ -1760,11 +1774,17 @@ async function reportWebhook() {
                 openPositions
             );
             console.log("Discord report sent successfully");
+            safetyReset(); // Additional safety reset
         }
         catch (err) {
             console.log(chalk.red("Discord Webhook Error"));
             console.log(err);
+            safetyReset(); // Safety reset on error
         }
+        finally {
+            isGeneratingReport = false; // Reset flag in finally block
+        }
+        
         console.log("Discord report generation completed");
     }
 }
