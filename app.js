@@ -185,13 +185,33 @@ async function initializeConfigFiles() {
         // Refresh account.json
         console.log("Refreshing account.json...");
         const accountExists = fs.existsSync('account.json');
-        if (!accountExists) {
+        const currentBalance = await getBalance();
+
+        if (!accountExists || currentBalance === null) {
             const defaultAccount = {
                 startingBalance: 0,
                 config_set: false,
-                lastUpdated: new Date().toISOString()
+                lastUpdated: new Date().toISOString(),
+                currentBalance: 0
             };
             fs.writeFileSync('account.json', JSON.stringify(defaultAccount, null, 4));
+        } else {
+            // Update existing account.json with current balance and timestamp
+            try {
+                const accountData = JSON.parse(fs.readFileSync('account.json', 'utf8'));
+                accountData.currentBalance = currentBalance;
+                accountData.lastUpdated = new Date().toISOString();
+
+                // Preserve existing startingBalance and config_set values
+                if (accountData.startingBalance === 0 && currentBalance > 0) {
+                    accountData.startingBalance = currentBalance;
+                }
+
+                fs.writeFileSync('account.json', JSON.stringify(accountData, null, 4));
+                logIT(`Account.json refreshed with current balance: ${currentBalance} USDT`, LOG_LEVEL.INFO);
+            } catch (updateError) {
+                logIT(`Error updating account.json: ${updateError.message}`, LOG_LEVEL.WARNING);
+            }
         }
 
         console.log(chalk.green("✓ Configuration files initialized and refreshed successfully"));
@@ -611,7 +631,6 @@ async function takeProfit(symbol, position) {
                     takeProfit: takeProfitStr,
                     positionIdx: positionIdx
                 });
-                
                 if (order.retMsg === "OK" || order.retMsg === "not modified" || order.retCode === 130024) {
                     //console.log(chalk.red("TAKE PROFIT ERROR: ", JSON.stringify(order, null, 2)));
                 }
@@ -1016,7 +1035,7 @@ async function setLeverage(pairs, leverage) {
                 var settingsIndex = settings.pairs.findIndex(x => x.symbol === pair);
                 if (settingsIndex !== -1) {
                     settings.pairs.splice(settingsIndex, 1);
-                    fs.writeFileSync('settings.json', JSON.stringify(settings, null, 2));
+                    fs.writeFileSync('settings.json', JSON.stringify(settings, null, 4));
                 }
             }
 
@@ -1146,75 +1165,152 @@ async function checkOpenPositions() {
 }
 
 async function getMinTradingSize() {
-    const instruments = await restClient.getInstrumentsInfo({ category: 'linear' });
+    try {
+        console.log("Starting min order size calculation...");
+        logIT("Fetching instruments info...", LOG_LEVEL.INFO);
 
-    var balance = await getBalance();
+        // Step 1: Get instruments info with error handling
+        const instruments = await restClient.getInstrumentsInfo({ category: 'linear' });
+        if (!instruments || !instruments.result || !instruments.result.list || instruments.result.list.length === 0) {
+            throw new Error("Failed to fetch instruments info or no instruments found");
+        }
+        logIT(`Fetched ${instruments.result.list.length} instruments`, LOG_LEVEL.INFO);
 
-    if (balance !== null) {
+        // Step 2: Get account balance with error handling
+        logIT("Fetching account balance...", LOG_LEVEL.INFO);
+        var balance = await getBalance();
+        if (balance === null || balance === undefined || isNaN(balance) || balance <= 0) {
+            throw new Error("Invalid balance received: " + balance);
+        }
+        logIT(`Account balance: ${balance} USDT`, LOG_LEVEL.INFO);
+
+        // Step 3: Get tickers with error handling
+        logIT("Fetching tickers...", LOG_LEVEL.INFO);
         var tickers = await restClient.getTickers({ category: 'linear' });
-        var positions = await restClient.getPositionInfo({ category: 'linear', settleCoin: 'USDT' });
+        if (!tickers || !tickers.result || !tickers.result.list || tickers.result.list.length === 0) {
+            throw new Error("Failed to fetch tickers or no tickers found");
+        }
+        logIT(`Fetched ${tickers.result.list.length} tickers`, LOG_LEVEL.INFO);
 
+        // Step 4: Get positions with error handling
+        logIT("Fetching positions...", LOG_LEVEL.INFO);
+        var positions = await restClient.getPositionInfo({ category: 'linear', settleCoin: 'USDT' });
+        if (!positions || !positions.result || !positions.result.list) {
+            logIT("Warning: Failed to fetch positions, continuing with empty positions array", LOG_LEVEL.WARNING);
+            positions = { result: { list: [] } };
+        }
+        logIT(`Fetched ${positions.result.list.length} positions`, LOG_LEVEL.INFO);
+
+        // Step 5: Process each instrument
         var minOrderSizes = [];
         console.log("Fetching min Trading Sizes for pairs, this could take a minute...");
+        let processedPairs = 0;
+        let skippedPairs = 0;
+
         for (var i = 0; i < instruments.result.list.length; i++) {
-            console.log("Pair: " + instruments.result.list[i].symbol + " Min Trading Size: " + instruments.result.list[i].lotSizeFilter.minOrderQty);
-            //check if minOrderQty usd value is less than process.env.MIN_ORDER_SIZE
-            var minOrderSize = instruments.result.list[i].lotSizeFilter.minOrderQty;
-            //get price of pair from tickers
-            var priceFetch = tickers.result.list.find(x => x.symbol === instruments.result.list[i].symbol);
-            var price = priceFetch.lastPrice;
-            //get usd value of min order size
-            var usdValue = (minOrderSize * price);
-            //find usd valie of process.env.MIN_ORDER_SIZE
-            var minOrderSizeUSD = (balance * process.env.PERCENT_ORDER_SIZE / 100) * process.env.LEVERAGE;
-            if (minOrderSizeUSD < usdValue) {
-                //use min order size
-                var minOrderSizePair = minOrderSize;
-            }
-            else {
-                //convert min orderSizeUSD to pair value
-                var minOrderSizePair = (minOrderSizeUSD / price);
-            }
+            const instrument = instruments.result.list[i];
             try {
-                //find pair in positions
-                var position = positions.result.list.find(x => x.symbol === instruments.result.list[i].symbol);
-
-                //find max position size for pair
-                var maxPositionSize = ((balance * (process.env.MAX_POSITION_SIZE_PERCENT / 100)) / price) * process.env.LEVERAGE;
-                //save min order size and max position size to json
-                var minOrderSizeJson = {
-                    "pair": instruments.result.list[i].symbol,
-                    "minOrderSize": minOrderSizePair,
-                    "maxPositionSize": maxPositionSize,
-                    "tickSize": instruments.result.list[i].priceFilter.tickSize,
+                // Skip invalid instruments
+                if (!instrument.lotSizeFilter || !instrument.lotSizeFilter.minOrderQty || !instrument.priceFilter || !instrument.priceFilter.tickSize) {
+                    logIT(`Skipping ${instrument.symbol}: invalid instrument data`, LOG_LEVEL.DEBUG);
+                    skippedPairs++;
+                    continue;
                 }
-                //add to array
+
+                const minOrderSize = instrument.lotSizeFilter.minOrderQty;
+
+                // Get price for this symbol
+                const priceFetch = tickers.result.list.find(x => x.symbol === instrument.symbol);
+                if (!priceFetch || !priceFetch.lastPrice || isNaN(parseFloat(priceFetch.lastPrice))) {
+                    logIT(`Skipping ${instrument.symbol}: invalid price data`, LOG_LEVEL.DEBUG);
+                    skippedPairs++;
+                    continue;
+                }
+                var price = parseFloat(priceFetch.lastPrice);
+
+                // Calculate USD value of min order size
+                var usdValue = (minOrderSize * price);
+
+                // Calculate our order size based on account parameters
+                var minOrderSizeUSD = (balance * process.env.PERCENT_ORDER_SIZE / 100) * process.env.LEVERAGE;
+
+                // Determine the actual order size to use
+                if (minOrderSizeUSD < usdValue) {
+                    var minOrderSizePair = minOrderSize;
+                    logIT(`Using min order size for ${instrument.symbol}: ${minOrderSizePair} (USD: ${usdValue.toFixed(2)})`, LOG_LEVEL.DEBUG);
+                } else {
+                    var minOrderSizePair = (minOrderSizeUSD / price);
+                    logIT(`Using calculated order size for ${instrument.symbol}: ${minOrderSizePair.toFixed(6)} (USD: ${minOrderSizeUSD.toFixed(2)})`, LOG_LEVEL.DEBUG);
+                }
+
+                // Find position if it exists
+                var position = positions.result.list.find(x => x.symbol === instrument.symbol);
+
+                // Calculate max position size for pair
+                var maxPositionSize = ((balance * (process.env.MAX_POSITION_SIZE_PERCENT / 100)) / price) * process.env.LEVERAGE;
+
+                // Create and store the order size data
+                var minOrderSizeJson = {
+                    "pair": instrument.symbol,
+                    "minOrderSize": parseFloat(minOrderSizePair.toFixed(8)),
+                    "maxPositionSize": parseFloat(maxPositionSize.toFixed(8)),
+                    "tickSize": parseFloat(instrument.priceFilter.tickSize),
+                }
                 minOrderSizes.push(minOrderSizeJson);
-            }
-            catch (e) {
-                // console.log(e);
-                await sleep(10);
-            }
+                processedPairs++;
 
-        }
-        fs.writeFileSync('min_order_sizes.json', JSON.stringify(minOrderSizes, null, 4));
+                // Progress reporting
+                if (processedPairs % 50 === 0) {
+                    logIT(`Processed ${processedPairs}/${instruments.result.list.length} pairs`, LOG_LEVEL.INFO);
+                }
 
-
-        //update settings.json with min order sizes
-        const settings = JSON.parse(fs.readFileSync('settings.json', 'utf8'));
-        for (var i = 0; i < minOrderSizes.length; i++) {
-            var settingsIndex = settings.pairs.findIndex(x => x.symbol === minOrderSizes[i].pair);
-            if (settingsIndex !== -1) {
-                settings.pairs[settingsIndex].order_size = minOrderSizes[i].minOrderSize;
-                settings.pairs[settingsIndex].max_position_size = minOrderSizes[i].maxPositionSize;
-
+            } catch (pairError) {
+                logIT(`Error processing pair ${instrument.symbol}: ${pairError.message}`, LOG_LEVEL.ERROR);
+                skippedPairs++;
+                continue;
             }
         }
-    }
-    else {
-        console.log("Error fetching balance");
-    }
 
+        // Log final results
+        logIT(`Pair processing complete: ${processedPairs} processed, ${skippedPairs} skipped`, LOG_LEVEL.INFO);
+
+        // Step 6: Write to file
+        try {
+            fs.writeFileSync('min_order_sizes.json', JSON.stringify(minOrderSizes, null, 4));
+            logIT(`min_order_sizes.json updated with ${minOrderSizes.length} pairs`, LOG_LEVEL.INFO);
+        } catch (fileError) {
+            throw new Error(`Failed to write min_order_sizes.json: ${fileError.message}`);
+        }
+
+        // Step 7: Update settings.json
+        try {
+            const settings = JSON.parse(fs.readFileSync('settings.json', 'utf8'));
+            let updatedSettings = 0;
+
+            for (var i = 0; i < minOrderSizes.length; i++) {
+                var settingsIndex = settings.pairs.findIndex(x => x.symbol === minOrderSizes[i].pair);
+                if (settingsIndex !== -1) {
+                    settings.pairs[settingsIndex].order_size = minOrderSizes[i].minOrderSize;
+                    settings.pairs[settingsIndex].max_position_size = minOrderSizes[i].maxPositionSize;
+                    updatedSettings++;
+                }
+            }
+
+            fs.writeFileSync('settings.json', JSON.stringify(settings, null, 4));
+            logIT(`Updated ${updatedSettings} pairs in settings.json`, LOG_LEVEL.INFO);
+
+        } catch (settingsError) {
+            throw new Error(`Failed to update settings.json: ${settingsError.message}`);
+        }
+
+        logIT("Min order size calculation completed successfully", LOG_LEVEL.INFO);
+
+    } catch (error) {
+        logIT(`Error in getMinTradingSize: ${error.message}`, LOG_LEVEL.ERROR);
+        // For debugging purposes, also log the error to console
+        console.log("Error details:", error);
+        throw error;
+    }
 }
 //get all symbols
 async function getSymbols() {
@@ -1668,7 +1764,7 @@ async function main() {
             if (positionModeSet && marginModeSet) {
                 //set to true and save
                 account.config_set = true;
-                fs.writeFileSync('account.json', JSON.stringify(account));
+                fs.writeFileSync('account.json', JSON.stringify(account, null, 4));
                 logIT("Account configuration (position and margin modes) set successfully", LOG_LEVEL.INFO);
             } else {
                 logIT("Failed to set account configuration modes", LOG_LEVEL.WARNING);
