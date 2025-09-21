@@ -70,27 +70,3 @@ export function calculateBotUptime(uptimeSeconds) {
     var times = [parseInt(elapsedDays), parseInt(elapsedHours), parseInt(elapsedMinutes), parseInt(elapsedSeconds)];
     return times;
 }
-
-// Note: traceTrade function is kept for potential use by other modules or future features
-export function traceTrade(step, obj, fields) {
-    let csv_line = moment().local().toString() + "," + step;
-    fields.forEach((key) => (csv_line += "," + (obj[key] ?? "")));
-    csv_line += "\n";
-
-    if (!fs.existsSync("trades.csv")) {
-        let csv_header = "time, step";
-        fields.forEach((key) => (csv_header += "," + key));
-        csv_line = csv_header + "\n" + csv_line;
-    }
-
-    fs.appendFile(
-        "trades.csv",
-        csv_line.replace(/\u001b\[\d+m/g, ""),
-        function (err) {
-            if (err) {
-                logIT("Logging error: " + err);
-                return console.log("Logging error: " + err);
-            }
-        }
-    );
-}

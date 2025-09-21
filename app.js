@@ -1,3 +1,12 @@
+/**
+ * 0xLIQD-BYBIT - Bybit V5 Liquidation Trading Bot
+ * Main application entry point
+ *
+ * This bot monitors real-time liquidation events on Bybit and places counter-trend
+ * orders with intelligent DCA, TP/SL management, and Discord notifications.
+ */
+
+// Import dependencies
 import { WebsocketClient, RestClientV5 } from 'bybit-api';
 import { config } from 'dotenv';
 config();
@@ -11,34 +20,32 @@ import { createMarketOrder } from './order.js';
 import { createPositionFromOrder } from './position.js';
 import { calculateRiskPrices, processOrderQuantity, shouldProcessPair, calculateBotUptime } from './utils.js';
 
-// used to calculate bot runtime
-const timestampBotStart = moment();
-
-var discordService;
-if (process.env.USE_DISCORD == "true") {
-    discordService = new DiscordService(process.env.DISCORD_URL);
-}
+// Bot configuration and state
+const timestampBotStart = moment(); // Bot start time for uptime calculation
 
 const key = process.env.API_KEY;
 const secret = process.env.API_SECRET;
-var rateLimit = 2000;
-var lastReport = 0;
-var pairs = [];
-var liquidationOrders = [];
-var lastUpdate = 0;
+const rateLimit = 2000; // Base rate limit between API calls
+const lastReport = 0; // Timestamp for last Discord report
+const pairs = []; // Array of trading pairs to monitor
+const liquidationOrders = []; // Cache of recent liquidation events
+const lastUpdate = 0; // Timestamp for last settings update
 
-//create ws client
+// Initialize Discord service if enabled
+const discordService = process.env.USE_DISCORD === "true" ? new DiscordService(process.env.DISCORD_URL) : null;
+
+// Initialize API clients
 const wsClient = new WebsocketClient({
     key: key,
-    secret: secret
+    secret: secret,
+    // Configure WebSocket for liquidation data stream
 });
 
-//create REST client
 const restClient = new RestClientV5({
     key: key,
     secret: secret,
-    testnet: false,
-    recv_window: 5000
+    testnet: false, // Use mainnet for trading
+    recv_window: 5000 // Extended receive window for API calls
 });
 
 // Auto-create and refresh configuration files on startup
@@ -204,55 +211,48 @@ cleanupOldLogFiles();
 // Auto-create and refresh configuration files before starting the bot
 await initializeConfigFiles();
 
+/**
+ * Handle WebSocket updates from Bybit liquidation stream
+ * Processes real-time liquidation events and triggers trading logic
+ */
 wsClient.on('update', (data) => {
     logIT('WebSocket update received', LOG_LEVEL.DEBUG);
     const liquidationData = data.data || data;
 
     liquidationData.forEach(liqData => {
-        var pair = liqData.s;
-        var price = parseFloat(liqData.p);
-        var side = liqData.S;
+        const pair = liqData.s;
+        const price = parseFloat(liqData.p);
+        const side = liqData.S;
+        const qty = parseFloat(liqData.v) * price; // Calculate USD value
+        const timestamp = Math.floor(Date.now() / 1000);
 
-        //convert to float
-        var qty = parseFloat(liqData.v) * price;
+        // Find or create liquidation entry for this pair
+        let index = liquidationOrders.findIndex(x => x.pair === pair);
+        const direction = side === "Buy" ? "Long" : "Short";
 
-        //create timestamp
-        var timestamp = Math.floor(Date.now() / 1000);
-
-        //find what index of liquidationOrders array is the pair
-        var index = liquidationOrders.findIndex(x => x.pair === pair);
-
-        var dir = "";
-        if (side === "Buy") {
-            dir = "Long";
-        } else {
-            dir = "Short";
-        }
-
-        // Check if pair should be processed using blacklist/whitelist utilities
+        // Skip blacklisted pairs
         if (!shouldProcessPair(pair, process.env.BLACKLIST, process.env.WHITELIST)) {
-            console.log(chalk.gray("Liquidation Found for Blacklisted pair: " + pair + " ignoring..."));
+            logIT(`Ignoring liquidation for blacklisted pair: ${pair}`, LOG_LEVEL.DEBUG);
             return;
         }
 
-        //if pair is not in liquidationOrders array, add it
+        // Initialize new liquidation entry if not exists
         if (index === -1) {
-            liquidationOrders.push({pair: pair, price: price, side: side, qty: qty, amount: 1, timestamp: timestamp});
+            liquidationOrders.push({pair, price, side, qty, amount: 1, timestamp});
             index = liquidationOrders.findIndex(x => x.pair === pair);
         }
 
-        //if pair is in liquidationOrders array, update it
+        // Update existing liquidation entry
         if (index !== -1) {
-            //check if timestamp is within 5 seconds of previous timestamp
+            // Aggregate liquidations within 5-second window
             if (timestamp - liquidationOrders[index].timestamp <= 5) {
                 liquidationOrders[index].price = price;
                 liquidationOrders[index].side = side;
-                //add qty to existing qty and round to 2 decimal places
                 liquidationOrders[index].qty = parseFloat((liquidationOrders[index].qty + qty).toFixed(2));
                 liquidationOrders[index].timestamp = timestamp;
-                liquidationOrders[index].amount = liquidationOrders[index].amount + 1;
+                liquidationOrders[index].amount += 1;
             } else {
-                //if timestamp is more than 5 seconds from previous timestamp, overwrite
+                // Reset aggregation for new liquidation event
                 liquidationOrders[index].price = price;
                 liquidationOrders[index].side = side;
                 liquidationOrders[index].qty = qty;
@@ -260,186 +260,204 @@ wsClient.on('update', (data) => {
                 liquidationOrders[index].amount = 1;
             }
 
-            // Get dynamic liq_volume from research.json for this pair
+            // Get dynamic liquidation volume threshold
             const researchData = readResearchFile();
-            let dynamicLiqVolume = process.env.MIN_LIQUIDATION_VOLUME;
-            if (researchData && researchData.data) {
-                const symbolName = pair.replace('USDT', ''); // Remove USDT to match research.json format
+            let dynamicLiqVolume = parseFloat(process.env.MIN_LIQUIDATION_VOLUME) || 0;
+
+            if (researchData?.data) {
+                const symbolName = pair.replace('USDT', '');
                 const researchEntry = researchData.data.find(item => item.name === symbolName);
-                if (researchEntry && researchEntry.liq_volume) {
+                if (researchEntry?.liq_volume) {
                     dynamicLiqVolume = researchEntry.liq_volume;
                 }
             }
 
+            // Check if liquidation volume meets threshold and execute trade
             if (liquidationOrders[index].qty > dynamicLiqVolume) {
+                logIT(`Liquidation threshold met: ${liquidationOrders[index].qty} USDT > ${dynamicLiqVolume} USDT`, LOG_LEVEL.INFO);
                 scalp(pair, index, liquidationOrders[index].qty, dynamicLiqVolume);
             } else {
-                console.log(chalk.magenta("[" + liquidationOrders[index].amount + "] " + dir + " Liquidation order for " + liquidationOrders[index].pair + " with a cumulative value of " + liquidationOrders[index].qty + " USDT"));
-                console.log(chalk.yellow("Not enough liquidations to trade " + liquidationOrders[index].pair));
+                logIT(`Insufficient liquidation volume for ${pair}: ${liquidationOrders[index].qty} USDT (threshold: ${dynamicLiqVolume} USDT)`, LOG_LEVEL.DEBUG);
             }
         }
     });
 });
 
+// WebSocket connection lifecycle handlers
 wsClient.on('open', (data) => {
     logIT(`WebSocket connection opened: ${data.wsKey}`, LOG_LEVEL.INFO);
 });
 
 wsClient.on('response', (data) => {
-    logIT(`WebSocket response: ${data.wsKey}`, LOG_LEVEL.DEBUG);
+    logIT(`WebSocket response received: ${data.wsKey}`, LOG_LEVEL.DEBUG);
 });
 
 wsClient.on('reconnect', ({ wsKey }) => {
-    logIT(`WebSocket automatically reconnecting: ${wsKey}`, LOG_LEVEL.WARNING);
+    logIT(`WebSocket reconnecting: ${wsKey}`, LOG_LEVEL.WARNING);
 });
 
 wsClient.on('reconnected', (data) => {
     logIT(`WebSocket reconnected: ${data?.wsKey}`, LOG_LEVEL.INFO);
 });
 
-//run websocket
-async function liquidationEngine(pairs) {
-    wsClient.subscribeV5(pairs, 'linear');
+/**
+ * Start WebSocket liquidation stream for specified trading pairs
+ */
+async function liquidationEngine(tradingPairs) {
+    logIT(`Starting liquidation stream for ${tradingPairs.length} pairs`, LOG_LEVEL.INFO);
+    wsClient.subscribeV5(tradingPairs, 'linear');
 }
 
-//Get server time
+/**
+ * Get server time and handle periodic reporting
+ * @returns {string} Formatted server time
+ */
 async function getServerTime() {
-    const data = await restClient.getServerTime();
-    var usedBalance = new Date(data.time *1000);
-    var balance = usedBalance.toGMTString()+'\n'+usedBalance.toLocaleString();
+    try {
+        const data = await restClient.getServerTime();
+        const serverTime = new Date(data.time * 1000);
+        const formattedTime = serverTime.toGMTString() + '\n' + serverTime.toLocaleString();
 
-    //check when last was more than configured interval
-    const reportInterval = getReportInterval();
-    if (Date.now() - lastReport > reportInterval) {
-        //send report
-        reportWebhook();
-        //checkCommit();
-        lastReport = Date.now();
-    }
-    return balance;
-
-}
-
-function getReportInterval() {
-    const CONFIG_INTERVAL = process.env.DISCORD_REPORT_INTERVAL || 30; // 30minutes default
-    return CONFIG_INTERVAL * 60 * 1000;
-}
-
-//Get margin
-async function getMargin() {
-    const data = await restClient.getWalletBalance({ accountType: 'UNIFIED', coin: 'USDT' });
-    var usedBalance = data.result.list[0].coin[0].totalPositionIM;
-    var balance = usedBalance;
-
-    //check when last was more than configured interval
-    const reportInterval = getReportInterval();
-    if (Date.now() - lastReport > reportInterval) {
-        //send report
-        reportWebhook();
-        //checkCommit();
-        lastReport = Date.now();
-    }
-    return balance;
-
-}
-
-//get account balance
-async function getBalance() {
-    try{
-        const data = await restClient.getWalletBalance({ accountType: 'UNIFIED', coin: 'USDT' });
-        const spotBal = await restClient.getWalletBalance({ accountType: 'SPOT', coin: 'USDT' });
-
-        var availableBalance = data.result.list[0].totalAvailableBalance;
-        var balance = parseFloat(availableBalance);
-
-        //load settings.json
-        const settings = JSON.parse(fs.readFileSync('account.json', 'utf8'));
-
-        //check if starting balance is set
-        if (settings.startingBalance === 0) {
-            settings.startingBalance = balance;
-            fs.writeFileSync('account.json', JSON.stringify(settings, null, 4));
-            var startingBalance = settings.startingBalance;
-        }
-        else {
-            var startingBalance = settings.startingBalance;
-        }
-
-        //check when last was more than configured interval
+        // Check if periodic report is due
         const reportInterval = getReportInterval();
         if (Date.now() - lastReport > reportInterval) {
-            //send report
-            reportWebhook();
-            //checkCommit();
+            await reportWebhook();
             lastReport = Date.now();
         }
-        return balance;
+
+        return formattedTime;
+    } catch (error) {
+        logIT(`Error getting server time: ${error.message}`, LOG_LEVEL.ERROR);
+        return 'Error fetching server time';
     }
-    catch (e) {
+}
+
+/**
+ * Get current margin usage for positions
+ * @returns {number} Total position margin in USDT
+ */
+async function getMargin() {
+    try {
+        const data = await restClient.getWalletBalance({ accountType: 'UNIFIED', coin: 'USDT' });
+        const margin = data.result.list[0].coin[0].totalPositionIM;
+
+        // Check if periodic report is due
+        const reportInterval = getReportInterval();
+        if (Date.now() - lastReport > reportInterval) {
+            await reportWebhook();
+            lastReport = Date.now();
+        }
+
+        return margin;
+    } catch (error) {
+        logIT(`Error getting margin: ${error.message}`, LOG_LEVEL.ERROR);
+        return 0;
+    }
+}
+
+/**
+ * Calculate Discord report interval in milliseconds
+ * @returns {number} Interval in milliseconds
+ */
+function getReportInterval() {
+    const intervalMinutes = parseInt(process.env.DISCORD_REPORT_INTERVAL) || 30; // 30 minutes default
+    return intervalMinutes * 60 * 1000;
+}
+
+/**
+ * Get available account balance and update starting balance if needed
+ * @returns {number|null} Available balance in USDT or null on error
+ */
+async function getBalance() {
+    try {
+        const data = await restClient.getWalletBalance({ accountType: 'UNIFIED', coin: 'USDT' });
+        const availableBalance = data.result.list[0].totalAvailableBalance;
+        const balance = parseFloat(availableBalance);
+
+        // Load and update account configuration
+        const accountConfig = JSON.parse(fs.readFileSync('account.json', 'utf8'));
+
+        // Set starting balance if not already configured
+        if (accountConfig.startingBalance === 0) {
+            accountConfig.startingBalance = balance;
+            fs.writeFileSync('account.json', JSON.stringify(accountConfig, null, 4));
+            logIT(`Starting balance set to: ${balance} USDT`, LOG_LEVEL.INFO);
+        }
+
+        // Check if periodic report is due
+        const reportInterval = getReportInterval();
+        if (Date.now() - lastReport > reportInterval) {
+            await reportWebhook();
+            lastReport = Date.now();
+        }
+
+        return balance;
+    } catch (error) {
+        logIT(`Error getting balance: ${error.message}`, LOG_LEVEL.ERROR);
         return null;
     }
-
 }
-//get position
+/**
+ * Get position information for a specific trading pair and side
+ * @param {string} pair - Trading pair symbol (e.g., 'BTCUSDT')
+ * @param {string} side - Position side ('Buy' or 'Sell')
+ * @returns {Object} Position data with calculated metrics
+ */
 async function getPosition(pair, side) {
     try {
-        //get positions for specific pair
-        var positions = await restClient.getPositionInfo({ category: 'linear', symbol: pair });
+        const positions = await restClient.getPositionInfo({ category: 'linear', symbol: pair });
 
-        if (positions.result !== null && positions.result.list && positions.result.list.length > 0) {
-            //look for pair in positions with the same side
-            var index = positions.result.list.findIndex(x => x.side === side);
-            if (index !== -1) {
-                const size = parseFloat(positions.result.list[index].size);
-                if (size >= 0) {
-                    if(size > 0){
-                        console.log(chalk.blueBright("Open position found for " + positions.result.list[index].symbol + " with a size of " + size + " contracts" + " with profit of " + positions.result.list[index].realisedPnl + " USDT"));
-                        var profit = positions.result.list[index].unrealisedPnl;
-                        //calculate the profit % change in USD
-                        var leverage = parseFloat(process.env.LEVERAGE) || 1; // Default to 1 if leverage is not set or 0
-                        var margin = positions.result.list[index].positionValue/leverage;
-                        var percentGain = (profit / margin) * 100;
-                        return {side: positions.result.list[index].side, entryPrice: positions.result.list[index].avgPrice, size: size, percentGain: percentGain};
-                    }
-                    else{
-                        //no open position
-                        return {side: positions.result.list[index].side, entryPrice: positions.result.list[index].avgPrice, size: size, percentGain: 0};
-                    }
-                }
-                else {
-                    console.log("Error: getPosition invalid for " + pair + " size parameter is returning " + size);
-                    messageWebhook("Error: getPosition invalid for " + pair + " size parameter is returning " + size);
-                    return {side: null, entryPrice: null, size: null, percentGain: null};
-                }
-            }
-            else {
-                // No position found with the specified side, check if there's any position at all for this pair
-                console.log(chalk.yellow("No " + side + " position found for " + pair + ", checking for any position"));
-                
-                // Check if there's a position with the opposite side
-                var oppositeSide = side === "Buy" ? "Sell" : "Buy";
-                var oppositeIndex = positions.result.list.findIndex(x => x.side === oppositeSide);
-                
-                if (oppositeIndex !== -1) {
-                    console.log(chalk.yellow("Found opposite side position for " + pair + ": " + oppositeSide));
-                    // Return a position with size 0 to indicate no position on the requested side
-                    return {side: side, entryPrice: null, size: 0, percentGain: 0};
-                }
-                else {
-                    // No position at all for this pair
-                    console.log(chalk.yellow("No position found for " + pair));
-                    return {side: side, entryPrice: null, size: 0, percentGain: 0};
-                }
-            }
+        if (!positions?.result?.list || positions.result.list.length === 0) {
+            logIT(`No positions data returned for ${pair}`, LOG_LEVEL.DEBUG);
+            return { side, entryPrice: null, size: 0, percentGain: 0 };
         }
-        else {
-            console.log(chalk.yellow("No positions data returned for " + pair));
-            return {side: side, entryPrice: null, size: 0, percentGain: 0};
+
+        // Look for position with matching side
+        const positionIndex = positions.result.list.findIndex(x => x.side === side);
+
+        if (positionIndex !== -1) {
+            const position = positions.result.list[positionIndex];
+            const size = parseFloat(position.size);
+
+            if (size > 0) {
+                // Log active position
+                const unrealizedPnl = position.unrealisedPnl || 0;
+                logIT(`Open ${side} position for ${pair}: ${size} contracts, PnL: ${unrealizedPnl} USDT`, LOG_LEVEL.INFO);
+
+                // Calculate percentage gain
+                const leverage = parseFloat(process.env.LEVERAGE) || 1;
+                const margin = position.positionValue / leverage;
+                const percentGain = margin > 0 ? (unrealizedPnl / margin) * 100 : 0;
+
+                return {
+                    side: position.side,
+                    entryPrice: position.avgPrice,
+                    size: size,
+                    percentGain: percentGain
+                };
+            } else {
+                return {
+                    side: position.side,
+                    entryPrice: position.avgPrice,
+                    size: size,
+                    percentGain: 0
+                };
+            }
+        } else {
+            // Check for opposite side position in hedge mode
+            const oppositeSide = side === "Buy" ? "Sell" : "Buy";
+            const oppositeIndex = positions.result.list.findIndex(x => x.side === oppositeSide);
+
+            if (oppositeIndex !== -1) {
+                logIT(`Found opposite side position for ${pair}: ${oppositeSide}`, LOG_LEVEL.DEBUG);
+            }
+
+            // Return no position found structure
+            return { side, entryPrice: null, size: 0, percentGain: 0 };
         }
-    }
-    catch (error) {
-        console.log(chalk.red("Error in getPosition for " + pair + ": " + error.message));
-        return {side: side, entryPrice: null, size: 0, percentGain: 0};
+    } catch (error) {
+        logIT(`Error in getPosition for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
+        return { side, entryPrice: null, size: 0, percentGain: 0 };
     }
 }
 //take profit
@@ -551,7 +569,6 @@ async function takeProfit(symbol, position) {
                     stopLoss: stopLossStr,
                     positionIdx: positionIdx
                 });
-                //console.log(JSON.stringify(order, null, 4));
 
                 if (order.retMsg === "OK" || order.retMsg === "not modified" || order.retCode === 10002) {
                     //console.log(chalk.red("TAKE PROFIT ERROR: ", JSON.stringify(order, null, 2)));
@@ -1034,6 +1051,33 @@ async function setPositionMode() {
     }
     else {
         logIT("Unable to set position mode", LOG_LEVEL.ERROR);
+        return false;
+    }
+}
+
+// Set account margin mode based on configuration
+async function setMarginMode() {
+    try {
+        const marginMode = process.env.MARGIN || 'REGULAR_MARGIN';
+
+        // Validate margin mode
+        const validModes = ['ISOLATED_MARGIN', 'REGULAR_MARGIN', 'PORTFOLIO_MARGIN'];
+        if (!validModes.includes(marginMode)) {
+            logIT(`Invalid margin mode: ${marginMode}. Using default REGULAR_MARGIN`, LOG_LEVEL.WARNING);
+            return false;
+        }
+
+        const set = await restClient.setMarginMode(marginMode);
+
+        if (set.retCode == 0) {
+            logIT(`Account margin mode set to ${marginMode}`, LOG_LEVEL.INFO);
+            return true;
+        } else {
+            logIT(`Unable to set margin mode to ${marginMode}: ${set.retMsg}`, LOG_LEVEL.ERROR);
+            return false;
+        }
+    } catch (error) {
+        logIT(`Error setting margin mode: ${error.message}`, LOG_LEVEL.ERROR);
         return false;
     }
 }
@@ -1629,20 +1673,25 @@ async function reportWebhook() {
 
 
 async function main() {
-    console.log("Starting Lick Hunter!");
+    console.log("Starting 0xLIQD-BYBIT...");
     try{
         pairs = await getSymbols();
 
         //load local file acccount.json with out require and see if "config_set" is true
         var account = JSON.parse(fs.readFileSync('account.json', 'utf8'));
         if (account.config_set == false) {
-            var isSet = await setPositionMode();
-            if (isSet == true) {
+            // Set both position mode and margin mode on first run
+            const positionModeSet = await setPositionMode();
+            const marginModeSet = await setMarginMode();
+
+            if (positionModeSet && marginModeSet) {
                 //set to true and save
                 account.config_set = true;
                 fs.writeFileSync('account.json', JSON.stringify(account));
+                logIT("Account configuration (position and margin modes) set successfully", LOG_LEVEL.INFO);
+            } else {
+                logIT("Failed to set account configuration modes", LOG_LEVEL.WARNING);
             }
-
         }
 
         if(process.env.UPDATE_MIN_ORDER_SIZING == "true") {
@@ -1654,7 +1703,6 @@ async function main() {
         }
         if (process.env.USE_SET_LEVERAGE.toLowerCase() == "true") {
             await setLeverage(pairs, process.env.LEVERAGE);
-            
         }
     }
     catch (err) {
@@ -1664,7 +1712,7 @@ async function main() {
 
         if (process.env.USE_DISCORD == "true")
             messageWebhook(err);
-            
+
         await sleep(10000);
     }
 

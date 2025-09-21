@@ -94,9 +94,29 @@ USE_DCA_FEATURE = true                  # Enable DCA (Dollar Cost Averaging) for
 RISK_LEVEL = 2                          # Risk level for smart settings (1=conservative, 5=aggressive, 0=disable)
 UPDATE_MIN_ORDER_SIZING = true           # Auto-update min order sizes based on balance
 USE_SET_LEVERAGE = true                  # Automatically set leverage on all pairs
-MARGIN = CROSS                          # Margin mode (CROSS/ISOLATED) - currently not implemented
+MARGIN = REGULAR_MARGIN                 # Margin mode: ISOLATED_MARGIN, REGULAR_MARGIN, PORTFOLIO_MARGIN
 HEDGE_MODE = false                      # Enable hedge position mode (true/false) for safer trading with opposite positions
 ```
+
+##### Margin Mode Feature
+
+The bot supports three margin modes through Bybit V5 API:
+
+**Available Options:**
+- **`REGULAR_MARGIN`** (default): Cross-margin where all positions share the same margin pool
+- **`ISOLATED_MARGIN`**: Each position has its own isolated margin, limiting losses to that position only
+- **`PORTFOLIO_MARGIN`**: Advanced portfolio margin for professional traders (higher tier accounts required)
+
+**How it works:**
+- Margin mode is automatically set on the first bot startup
+- The configuration is saved to `account.json` and only set once
+- Position mode (hedge vs one-way) and margin mode are set together during initial setup
+- Changing the `MARGIN` variable in .env requires deleting `account.json` to reconfigure
+
+**Benefits of Different Margin Modes:**
+- **Regular Margin**: Maximum efficiency and buying power across all positions
+- **Isolated Margin**: Safer approach where losses in one position don't affect others
+- **Portfolio Margin**: Advanced risk management for large portfolios with offsetting positions
 
 ##### Hedge Mode Feature
 
