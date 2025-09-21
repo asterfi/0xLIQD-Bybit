@@ -717,7 +717,8 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
 
                         console.log(chalk.blue("Placing Buy order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
 
-                        const order = await createMarketOrder(restClient, pair, "Buy", orderQty);
+                        const positionIdx = isHedgeMode() ? 1 : 0; // 1 for hedge Buy, 0 for one-way
+                        const order = await createMarketOrder(restClient, pair, "Buy", orderQty, positionIdx);
                         
                         // Check if order was successful
                         if (order.retCode === 0 && order.result) {
@@ -757,7 +758,8 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                                 orderQty = processOrderQuantity(orderQty, minOrderQty, qtyStep);
 
                                 console.log(chalk.blue("Placing Buy DCA order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
-                                
+
+                                const positionIdx = isHedgeMode() ? 1 : 0; // 1 for hedge Buy, 0 for one-way
                                 const orderParams = {
                                     category: 'linear',
                                     symbol: pair,
@@ -766,10 +768,10 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                                     qty: orderQty,
                                     reduceOnly: false  // Explicitly set to false to open new positions
                                 };
-                                
+
                                 logIT(`DCA Order parameters: ${JSON.stringify(orderParams, null, 2)}`, LOG_LEVEL.DEBUG);
-                                
-                                const order = await createMarketOrder(restClient, pair, "Buy", orderQty);
+
+                                const order = await createMarketOrder(restClient, pair, "Buy", orderQty, positionIdx);
                                 
                                 // Check if order was successful
                                 if (order.retCode === 0 && order.result) {
@@ -850,7 +852,8 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
 
                         console.log(chalk.blue("Placing Sell order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
 
-                        const order = await createMarketOrder(restClient, pair, "Sell", orderQty);
+                        const positionIdx = isHedgeMode() ? 2 : 0; // 2 for hedge Sell, 0 for one-way
+                        const order = await createMarketOrder(restClient, pair, "Sell", orderQty, positionIdx);
                         
                         // Check if order was successful
                         if (order.retCode === 0 && order.result) {
@@ -889,6 +892,7 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
 
                                 console.log(chalk.blue("Placing Sell DCA order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
 
+                                const positionIdx = isHedgeMode() ? 2 : 0; // 2 for hedge Sell, 0 for one-way
                                 const orderParams = {
                                     category: 'linear',
                                     symbol: pair,
@@ -900,7 +904,7 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
 
                                 logIT(`DCA Order parameters: ${JSON.stringify(orderParams, null, 2)}`, LOG_LEVEL.DEBUG);
 
-                                const order = await createMarketOrder(restClient, pair, "Sell", orderQty);
+                                const order = await createMarketOrder(restClient, pair, "Sell", orderQty, positionIdx);
                                 
                                 // Check if order was successful
                                 if (order.retCode === 0 && order.result) {
