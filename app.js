@@ -850,7 +850,7 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
 
                         console.log(chalk.blue("Placing Sell order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
 
-                        const order = await createMarketOrder(restClient, pair, "Buy", orderQty);
+                        const order = await createMarketOrder(restClient, pair, "Sell", orderQty);
                         
                         // Check if order was successful
                         if (order.retCode === 0 && order.result) {
@@ -888,7 +888,7 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                                 orderQty = processOrderQuantity(orderQty, minOrderQty, qtyStep);
 
                                 console.log(chalk.blue("Placing Sell DCA order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
-                                
+
                                 const orderParams = {
                                     category: 'linear',
                                     symbol: pair,
@@ -897,10 +897,10 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                                     qty: orderQty,
                                     reduceOnly: false  // Explicitly set to false to open new positions
                                 };
-                                
+
                                 logIT(`DCA Order parameters: ${JSON.stringify(orderParams, null, 2)}`, LOG_LEVEL.DEBUG);
-                                
-                                const order = await createMarketOrder(restClient, pair, "Buy", orderQty);
+
+                                const order = await createMarketOrder(restClient, pair, "Sell", orderQty);
                                 
                                 // Check if order was successful
                                 if (order.retCode === 0 && order.result) {
@@ -1001,7 +1001,7 @@ async function setLeverage(pairs, leverage) {
 
 // Set position mode based on configuration
 async function setPositionMode() {
-    const hedgeMode = process.env.HEDGE_MODE === "true" || process.env.HEDGE_MODE === "true";
+    const hedgeMode = process.env.HEDGE_MODE === "true";
     const mode = hedgeMode ? 3 : 0; // 3 = hedge mode, 0 = one-way mode in V5
 
     const set = await restClient.switchPositionMode({
