@@ -2669,7 +2669,7 @@ async function main() {
             await apiDataService.forceUpdateAll();
         }
         if (process.env.USE_SET_LEVERAGE.toLowerCase() == "true") {
-            // await setLeverage(pairs, process.env.LEVERAGE);
+            await setLeverage(pairs, process.env.LEVERAGE);
         }
 
         // Check and set TP/SL for existing positions
