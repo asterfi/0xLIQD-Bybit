@@ -30,8 +30,8 @@ class DiscordService {
                 .setColor(color)
                 .addFields(
                     { name: '📊 Symbol', value: `\`${symbol}\``, inline: true },
-                    { name: '💰 Order Size', value: `\`${amount.toFixed(4)}\``, inline: true },
-                    { name: '📈 Liquidation Volume', value: `\`${qty.toFixed(2)} USDT\``, inline: true },
+                    { name: '💰 Order Size', value: `\`${parseFloat(amount).toFixed(4)}\``, inline: true },
+                    { name: '📈 Liquidation Volume', value: `\`${parseFloat(qty).toFixed(2)} USDT\``, inline: true },
                 )
                 .setTimestamp()
                 .setFooter({ text: '0xLIQD-BYBIT' });
@@ -71,7 +71,53 @@ class DiscordService {
         }
     }
 
-    async sendReport(balance, leverage, margin, profit, profitPercent, uptime, serverTime, positions, openPositionsCount) {
+    async sendDCANotification(symbol, dcaStats) {
+        try {
+            const embed = new EmbedBuilder()
+                .setTitle('🎯 SCALED ATR DCA ACTIVATED 🎯')
+                .setDescription(`**DCA System Initialized for ${symbol}**`)
+                .setColor(0xff9900)
+                .addFields(
+                    { name: '📊 Symbol', value: `\`${symbol}\``, inline: true },
+                    { name: '🎯 DCA Levels', value: `\`${dcaStats.totalLevels}\``, inline: true },
+                    { name: '📈 Active Orders', value: `\`${dcaStats.activeOrders}\``, inline: true },
+                    { name: '💰 Total Allocated', value: `\`${dcaStats.totalAllocated.toFixed(4)}\``, inline: true },
+                    { name: '📊 ATR Value', value: `\`${dcaStats.atr.toFixed(6)}\``, inline: true },
+                    { name: '⚡ Progress', value: `\`${dcaStats.progressPercent.toFixed(1)}%\``, inline: true }
+                )
+                .setTimestamp()
+                .setFooter({ text: '0xLIQD-BYBIT Scaled ATR DCA' });
+
+            await this.webhookClient.send({ embeds: [embed] });
+        } catch (err) {
+            console.error("Discord DCA Notification Error:", err);
+        }
+    }
+
+    async sendDCACompletionNotification(symbol, completionStats) {
+        try {
+            const embed = new EmbedBuilder()
+                .setTitle('✅ SCALED ATR DCA COMPLETED ✅')
+                .setDescription(`**DCA Sequence Finished for ${symbol}**`)
+                .setColor(0x00ff00)
+                .addFields(
+                    { name: '📊 Symbol', value: `\`${symbol}\``, inline: true },
+                    { name: '🎯 Levels Filled', value: `\`${completionStats.filledLevels}/${completionStats.totalLevels}\``, inline: true },
+                    { name: '📈 Success Rate', value: `\`${completionStats.successRate.toFixed(1)}%\``, inline: true },
+                    { name: '💰 Total Allocated', value: `\`${completionStats.totalAllocated.toFixed(4)}\``, inline: true },
+                    { name: '🎯 Average Entry', value: `\`${completionStats.averageEntryPrice.toFixed(6)}\``, inline: true },
+                    { name: '⏱️ Duration', value: `\`${completionStats.durationMinutes} min\``, inline: true }
+                )
+                .setTimestamp()
+                .setFooter({ text: '0xLIQD-BYBIT Scaled ATR DCA' });
+
+            await this.webhookClient.send({ embeds: [embed] });
+        } catch (err) {
+            console.error("Discord DCA Completion Error:", err);
+        }
+    }
+
+    async sendReport(balance, leverage, margin, profit, profitPercent, uptime, serverTime, positions, openPositionsCount, dcaStats = null) {
         try {
             const embed = new EmbedBuilder()
                 .setTitle('📊 0xLIQD-BYBIT REPORT 📊')
@@ -79,7 +125,6 @@ class DiscordService {
                 .setColor(0x9966cc)
                 .addFields(
                     { name: '💰 Account Balance', value: `\`\`\`autohotkey\n${balance} USDT\`\`\``, inline: true },
-                    { name: '⚖️ Leverage', value: `\`\`\`autohotkey\n${leverage}x\`\`\``, inline: true },
                     { name: '📊 Total USDT in Positions', value: `\`\`\`autohotkey\n${margin} USDT\`\`\``, inline: true },
                     { name: '💵 Profit USDT', value: `\`\`\`autohotkey\n${profit} USDT\`\`\``, inline: true },
                     { name: '📈 Profit %', value: `\`\`\`autohotkey\n${profitPercent}%\`\`\``, inline: true },
@@ -88,6 +133,15 @@ class DiscordService {
                 )
                 .setFooter({ text: `Open Positions: ${openPositionsCount}` })
                 .setTimestamp();
+
+            // Add DCA statistics if enabled and available
+            if (dcaStats && dcaStats.enabled) {
+                embed.addFields({
+                    name: '🎯 Scaled ATR DCA Status',
+                    value: `**Active Positions:** ${dcaStats.activePositions.length}\n**Active Orders:** ${dcaStats.stats.activeOrders}\n**Total Orders:** ${dcaStats.stats.totalOrders}\n**Filled Orders:** ${dcaStats.stats.filledOrders}\n**Failed Orders:** ${dcaStats.stats.failedOrders}`,
+                    inline: false
+                });
+            }
 
             // Add position details
             if (positions.length > 0) {

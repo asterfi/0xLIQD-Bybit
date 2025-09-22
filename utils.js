@@ -137,6 +137,27 @@ export function calculateProfitLossPrices(entryPrice, side, takeProfitPercent, s
         return null;
     }
 
+    // Additional validation: Ensure TP/SL prices are logical for the position side
+    if (side === "Buy") {
+        if (takeProfit <= entryPrice) {
+            console.log(chalk.red(`Invalid take profit price for Buy position: TP (${takeProfit}) should be greater than entry price (${entryPrice})`));
+            return null;
+        }
+        if (useStopLoss && stopLoss >= entryPrice) {
+            console.log(chalk.red(`Invalid stop loss price for Buy position: SL (${stopLoss}) should be less than entry price (${entryPrice})`));
+            return null;
+        }
+    } else {
+        if (takeProfit >= entryPrice) {
+            console.log(chalk.red(`Invalid take profit price for Sell position: TP (${takeProfit}) should be less than entry price (${entryPrice})`));
+            return null;
+        }
+        if (useStopLoss && stopLoss <= entryPrice) {
+            console.log(chalk.red(`Invalid stop loss price for Sell position: SL (${stopLoss}) should be greater than entry price (${entryPrice})`));
+            return null;
+        }
+    }
+
     return { takeProfit, stopLoss };
 }
 
@@ -163,7 +184,30 @@ export function getTickData(symbol) {
 
 // Utility function to format price with correct decimal places
 export function formatPrice(price, decimalPlaces) {
-    return price.toFixed(decimalPlaces);
+    try {
+        // Ensure price is a valid number
+        const numericPrice = parseFloat(price);
+        if (isNaN(numericPrice) || numericPrice <= 0) {
+            console.log(chalk.red(`Invalid price for formatting: ${price}`));
+            return "0";
+        }
+
+        // Ensure decimalPlaces is a valid integer
+        const validDecimalPlaces = parseInt(decimalPlaces) || 6;
+
+        // Format the price
+        const formattedPrice = numericPrice.toFixed(validDecimalPlaces);
+
+        // Log extreme prices that might indicate formatting issues
+        if (numericPrice > 1000000) {
+            console.log(chalk.yellow(`Warning: Large price detected: ${numericPrice} -> ${formattedPrice}`));
+        }
+
+        return formattedPrice;
+    } catch (error) {
+        console.log(chalk.red(`Error formatting price ${price}: ${error.message}`));
+        return "0";
+    }
 }
 
 // Utility function to check if TP/SL update is needed

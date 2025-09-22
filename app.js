@@ -13,6 +13,7 @@ config();
 import fetch from 'node-fetch';
 import chalk from 'chalk';
 import fs from 'fs';
+import path from 'path';
 import DiscordService from './discordService.js';
 import moment from 'moment';
 import { logIT, LOG_LEVEL, cleanupOldLogFiles } from './log.js';
@@ -33,6 +34,8 @@ import {
     handleTpSlResponse
 } from './utils.js';
 import APIDataService from './apiDataService.js';
+import ATRService from './atrService.js';
+import ScaledATRDCA from './scaledATRDCA.js';
 
 // Bot configuration and state
 let timestampBotStart = moment(); // Bot start time for uptime calculation
@@ -66,6 +69,30 @@ const restClient = new RestClientV5({
 
 // Initialize API data service for periodic updates
 const apiDataService = new APIDataService(restClient, discordService);
+
+// Initialize ATR service
+const atrService = new ATRService(restClient);
+
+// Initialize Scaled ATR DCA system with full configuration
+const scaledATRDCA = new ScaledATRDCA(restClient, atrService, {
+    // ATR Settings
+    atrTimeframe: process.env.ATR_TIMEFRAME || '5m',
+    atrLength: parseInt(process.env.ATR_LENGTH) || 7,
+    atrDeviation: parseFloat(process.env.ATR_DEVIATION) || 0.5,
+
+    // DCA Order Settings
+    dcaNumOrders: parseInt(process.env.DCA_NUM_ORDERS) || 5,
+    // dcaMaxActiveOrders removed - orders are now placed sequentially
+    volumeScale: parseFloat(process.env.DCA_VOLUME_SCALE) || 1.5,
+    stepScale: parseFloat(process.env.DCA_STEP_SCALE) || 1.2,
+
+    // Risk Management
+    maxTotalPercent: parseFloat(process.env.DCA_MAX_TOTAL_PERCENT) || 25,
+    riskPerLevel: parseFloat(process.env.DCA_RISK_PER_LEVEL) || 5,
+
+    // Volume Filter
+    min24hVolume: parseFloat(process.env.MIN_24H_VOLUME) || 0
+});
 
 // Configure update intervals from environment variables
 if (process.env.RESEARCH_UPDATE_INTERVAL) {
@@ -252,19 +279,23 @@ cleanupOldLogFiles();
 await initializeConfigFiles();
 
 /**
- * Handle WebSocket updates from Bybit liquidation stream
- * Processes real-time liquidation events and triggers trading logic
+ * Handle WebSocket updates from Bybit streams
+ * Processes real-time liquidation events and order updates
  */
 wsClient.on('update', (data) => {
     logIT('WebSocket update received', LOG_LEVEL.DEBUG);
-    const liquidationData = data.data || data;
 
-    liquidationData.forEach(liqData => {
-        const pair = liqData.s;
-        const price = parseFloat(liqData.p);
-        const side = liqData.S;
-        const qty = parseFloat(liqData.v) * price; // Calculate USD value
-        const timestamp = Math.floor(Date.now() / 1000);
+    // Handle different data types
+    const updateData = data.data || data;
+
+    // Process liquidation data
+    if (data.topic && data.topic.includes('allLiquidation')) {
+        updateData.forEach(liqData => {
+            const pair = liqData.s;
+            const price = parseFloat(liqData.p);
+            const side = liqData.S;
+            const qty = parseFloat(liqData.v) * price; // Calculate USD value
+            const timestamp = Math.floor(Date.now() / 1000);
 
         // Find or create liquidation entry for this pair
         let index = liquidationOrders.findIndex(x => x.pair === pair);
@@ -321,6 +352,15 @@ wsClient.on('update', (data) => {
             }
         }
     });
+    }
+
+    // Handle order updates if Scaled ATR DCA is enabled
+    if (process.env.USE_SCALED_ATR_DCA === "true" && data.topic && data.topic.includes('order')) {
+        const orderData = data.data || data;
+        orderData.forEach(order => {
+            handleOrderUpdate(order);
+        });
+    }
 });
 
 // WebSocket connection lifecycle handlers
@@ -346,6 +386,201 @@ wsClient.on('reconnected', (data) => {
 async function liquidationEngine(tradingPairs) {
     logIT(`Starting liquidation stream for ${tradingPairs.length} pairs`, LOG_LEVEL.INFO);
     wsClient.subscribeV5(tradingPairs, 'linear');
+
+    // Subscribe to order stream if Scaled ATR DCA is enabled
+    if (process.env.USE_SCALED_ATR_DCA === "true") {
+        logIT('Subscribing to order stream for Scaled ATR DCA', LOG_LEVEL.INFO);
+        wsClient.subscribeV5(['order'], 'linear');
+    }
+}
+
+/**
+ * Get Scaled ATR DCA statistics and status
+ * Returns comprehensive information about DCA operations
+ */
+async function getDCAStatistics() {
+    try {
+        const stats = scaledATRDCA.getStatistics();
+        const activePositions = scaledATRDCA.getActivePositions();
+        const balance = await getBalance();
+
+        const report = {
+            timestamp: Date.now(),
+            stats: stats,
+            activePositions: activePositions,
+            accountBalance: balance,
+            enabled: process.env.USE_SCALED_ATR_DCA === "true",
+            config: {
+                atrTimeframe: process.env.ATR_TIMEFRAME || '15m',
+                atrLength: parseInt(process.env.ATR_LENGTH) || 14,
+                atrDeviation: parseFloat(process.env.ATR_DEVIATION) || 1.0,
+                dcaNumOrders: parseInt(process.env.DCA_NUM_ORDERS) || 7,
+                // dcaMaxActiveOrders removed - orders are now placed sequentially
+                dcaVolumeScale: parseFloat(process.env.DCA_VOLUME_SCALE) || 1.3,
+                dcaStepScale: parseFloat(process.env.DCA_STEP_SCALE) || 1.2
+            }
+        };
+
+        return report;
+    } catch (error) {
+        logIT(`Error getting DCA statistics: ${error.message}`, LOG_LEVEL.ERROR);
+        return null;
+    }
+}
+
+/**
+ * Display Scaled ATR DCA system status
+ * Provides a comprehensive overview of the DCA system state
+ */
+async function displayDCAStatus() {
+    try {
+        console.log(chalk.blue("\n=== SCALED ATR DCA SYSTEM STATUS ===\n"));
+
+        const dcaStats = await getDCAStatistics();
+        if (!dcaStats) {
+            console.log(chalk.red("Failed to get DCA statistics"));
+            return;
+        }
+
+        console.log(chalk.green("📊 System Configuration:"));
+        console.log(`   Enabled: ${dcaStats.enabled ? chalk.green('YES') : chalk.red('NO')}`);
+        console.log(`   ATR Timeframe: ${dcaStats.config.atrTimeframe}`);
+        console.log(`   ATR Length: ${dcaStats.config.atrLength} periods`);
+        console.log(`   ATR Deviation: ${dcaStats.config.atrDeviation}x`);
+        console.log(`   DCA Levels: ${dcaStats.config.dcaNumOrders}`);
+        console.log(`   Order Placement: Sequential (one at a time)`);
+        console.log(`   Volume Scale: ${dcaStats.config.dcaVolumeScale}x`);
+        console.log(`   Step Scale: ${dcaStats.config.dcaStepScale}x`);
+
+        console.log(chalk.green("\n📈 Performance Statistics:"));
+        console.log(`   Total Positions: ${dcaStats.stats.totalPositions}`);
+        console.log(`   Total Orders: ${dcaStats.stats.totalOrders}`);
+        console.log(`   Filled Orders: ${dcaStats.stats.filledOrders}`);
+        console.log(`   Failed Orders: ${dcaStats.stats.failedOrders}`);
+        console.log(`   Cancelled Orders: ${dcaStats.stats.cancelledOrders}`);
+        console.log(`   Active Positions: ${dcaStats.stats.activePositions}`);
+        console.log(`   Active Orders: ${dcaStats.stats.activeOrders}`);
+
+        if (dcaStats.activePositions.length > 0) {
+            console.log(chalk.green("\n🎯 Active DCA Positions:"));
+            dcaStats.activePositions.forEach((pos, index) => {
+                console.log(`   ${index + 1}. ${pos.symbol} (${pos.side})`);
+                console.log(`      Progress: ${pos.progressPercent.toFixed(1)}% (${pos.executedLevels}/${pos.totalLevels} levels)`);
+                console.log(`      Active Orders: ${pos.activeOrders}`);
+                console.log(`      Average Entry: ${pos.averageEntryPrice}`);
+                console.log(`      Total Allocated: ${pos.totalAllocated}`);
+                console.log(`      ATR: ${pos.atr}`);
+            });
+        } else {
+            console.log(chalk.yellow("\n📭 No active DCA positions"));
+        }
+
+        console.log(chalk.blue("\n=========================================\n"));
+
+    } catch (error) {
+        console.error(chalk.red(`Error displaying DCA status: ${error.message}`));
+    }
+}
+
+/**
+ * Handle WebSocket order updates for Scaled ATR DCA
+ * Processes order fill events and triggers DCA order placement
+ */
+function handleOrderUpdate(orderData) {
+    try {
+        if (orderData.category !== 'linear') return;
+
+        const orderId = orderData.orderId;
+        const orderStatus = orderData.orderStatus;
+        const symbol = orderData.symbol;
+        const side = orderData.side;
+        const qty = parseFloat(orderData.qty);
+        const price = parseFloat(orderData.price);
+
+        // Handle order fill events
+        if (orderStatus === 'Filled' && scaledATRDCA.activeOrders.has(orderId)) {
+            logIT(`Order fill detected: ${orderId} for ${symbol} - ${qty} @ ${price}`, LOG_LEVEL.INFO);
+
+            // Notify Scaled ATR DCA system
+            scaledATRDCA.handleOrderFill(orderId, price, qty)
+                .catch(error => {
+                    logIT(`Error handling order fill for ${orderId}: ${error.message}`, LOG_LEVEL.ERROR);
+                });
+        }
+
+        // Handle order cancellation events
+        if ((orderStatus === 'Cancelled' || orderStatus === 'Rejected') && scaledATRDCA.activeOrders.has(orderId)) {
+            logIT(`Order cancelled/rejected: ${orderId} for ${symbol}`, LOG_LEVEL.INFO);
+
+            // Remove from active orders
+            scaledATRDCA.activeOrders.delete(orderId);
+        }
+
+        // Check for position closure (this could be a TP/SL fill that closed the position)
+        if (orderStatus === 'Filled') {
+            // Delay the position check to ensure exchange has processed the closure
+            setTimeout(async () => {
+                await checkAndCleanupDCAPositions(symbol);
+            }, 2000); // 2 second delay
+        }
+
+    } catch (error) {
+        logIT(`Error handling order update: ${error.message}`, LOG_LEVEL.ERROR);
+    }
+}
+
+/**
+ * Check if main position is closed and cleanup associated DCA orders
+ * This prevents orphaned DCA limit orders when main position hits TP/SL
+ */
+async function checkAndCleanupDCAPositions(symbol) {
+    try {
+        if (!scaledATRDCA || !process.env.USE_SCALED_ATR_DCA === "true") {
+            return;
+        }
+
+        // Check current positions for this symbol
+        const longPosition = await getPosition(symbol, "Buy");
+        const shortPosition = await getPosition(symbol, "Sell");
+
+        // Get active DCA positions for this symbol
+        const activeDCAPositions = Array.from(scaledATRDCA.activePositions.values())
+            .filter(pos => pos.symbol === symbol && pos.status === 'active');
+
+        if (activeDCAPositions.length === 0) {
+            return; // No active DCA positions to check
+        }
+
+        logIT(`Checking DCA cleanup for ${symbol}: Long pos=${longPosition.size}, Short pos=${shortPosition.size}, DCA positions=${activeDCAPositions.length}`, LOG_LEVEL.DEBUG);
+
+        // Check each DCA position to see if it should be cleaned up
+        for (const dcaPosition of activeDCAPositions) {
+            const dcaSide = dcaPosition.side;
+            const mainPosition = dcaSide === 'long' ? longPosition : shortPosition;
+
+            // If main position is closed (size === 0) but DCA is still active, cleanup
+            if (mainPosition.size === 0 && dcaPosition.activeOrders.length > 0) {
+                logIT(`Main ${dcaSide} position closed for ${symbol}, cleaning up ${dcaPosition.activeOrders.length} DCA orders`, LOG_LEVEL.WARNING);
+
+                // Cancel all active DCA orders for this position
+                for (const orderId of dcaPosition.activeOrders) {
+                    try {
+                        await scaledATRDCA.cancelDCAOrder(dcaPosition.positionId, orderId);
+                        logIT(`Cancelled DCA order ${orderId} for closed position ${symbol}`, LOG_LEVEL.INFO);
+                    } catch (error) {
+                        logIT(`Failed to cancel DCA order ${orderId}: ${error.message}`, LOG_LEVEL.ERROR);
+                    }
+                }
+
+                // Mark DCA position as completed
+                await scaledATRDCA.completeDCAPosition(dcaPosition.positionId);
+                logIT(`DCA position ${dcaPosition.positionId} completed due to main position closure`, LOG_LEVEL.INFO);
+            }
+        }
+
+    } catch (error) {
+        logIT(`Error in DCA cleanup check for ${symbol}: ${error.message}`, LOG_LEVEL.ERROR);
+    }
 }
 
 /**
@@ -362,6 +597,12 @@ async function getServerTime() {
         const reportInterval = getReportInterval();
         if (Date.now() - lastReport > reportInterval) {
             await reportWebhook();
+
+            // Also perform DCA cleanup check for all active symbols
+            if (process.env.USE_SCALED_ATR_DCA === "true") {
+                await performDCACleanupCheck();
+            }
+
             lastReport = Date.now();
         }
 
@@ -385,6 +626,12 @@ async function getMargin() {
         const reportInterval = getReportInterval();
         if (Date.now() - lastReport > reportInterval) {
             await reportWebhook();
+
+            // Also perform DCA cleanup check for all active symbols
+            if (process.env.USE_SCALED_ATR_DCA === "true") {
+                await performDCACleanupCheck();
+            }
+
             lastReport = Date.now();
         }
 
@@ -392,6 +639,42 @@ async function getMargin() {
     } catch (error) {
         logIT(`Error getting margin: ${error.message}`, LOG_LEVEL.ERROR);
         return 0;
+    }
+}
+
+/**
+ * Perform comprehensive DCA cleanup check for all active symbols
+ * Runs periodically to catch any orphaned DCA positions
+ */
+async function performDCACleanupCheck() {
+    try {
+        if (!scaledATRDCA || !process.env.USE_SCALED_ATR_DCA === "true") {
+            return;
+        }
+
+        logIT(`Performing periodic DCA cleanup check`, LOG_LEVEL.DEBUG);
+
+        // Get all symbols with active DCA positions
+        const activeDCASymbols = new Set();
+        for (const positionState of scaledATRDCA.activePositions.values()) {
+            if (positionState.status === 'active' && positionState.activeOrders.length > 0) {
+                activeDCASymbols.add(positionState.symbol);
+            }
+        }
+
+        if (activeDCASymbols.size === 0) {
+            return; // No active DCA positions to check
+        }
+
+        logIT(`Found ${activeDCASymbols.size} symbols with active DCA positions: ${Array.from(activeDCASymbols).join(', ')}`, LOG_LEVEL.DEBUG);
+
+        // Check each symbol for cleanup
+        for (const symbol of activeDCASymbols) {
+            await checkAndCleanupDCAPositions(symbol);
+        }
+
+    } catch (error) {
+        logIT(`Error in periodic DCA cleanup check: ${error.message}`, LOG_LEVEL.ERROR);
     }
 }
 
@@ -745,16 +1028,24 @@ async function canOpenNewPosition(pair, side) {
         const hedgeMode = isHedgeMode();
         const maxPositions = parseInt(process.env.MAX_OPEN_POSITIONS) || 2;
 
+        // Get detailed position information
+        const positionInfo = await getDetailedPositionInfo();
+        if (!positionInfo) return false;
+
+        // Check if we already have a position for this exact pair and side
+        if (positionInfo.uniquePairs.has(pair)) {
+            const existingSides = positionInfo.uniquePairs.get(pair);
+            if (existingSides.includes(side)) {
+                logIT(`Position already exists for ${pair} ${side}, preventing duplicate`, LOG_LEVEL.WARNING);
+                return false; // Don't allow duplicate positions for same side
+            }
+        }
+
         if (!hedgeMode) {
             // Traditional mode: simple position count
-            const openPositions = await totalOpenPositions();
-            return openPositions < maxPositions;
+            return positionInfo.totalOpenPositions < maxPositions;
         } else {
-            // Hedge mode: more complex logic
-            const positionInfo = await getDetailedPositionInfo();
-            if (!positionInfo) return false;
-
-            // If under max positions, always allow
+            // Hedge mode: allow if under max positions OR if this is a valid hedge
             if (positionInfo.totalOpenPositions < maxPositions) {
                 return true;
             }
@@ -770,6 +1061,7 @@ async function canOpenNewPosition(pair, side) {
 
 // Order management functions
 let orderLocks = new Map(); // To prevent race conditions
+let dcaLocks = new Map(); // To prevent DCA initialization race conditions
 
 /**
  * Check all existing positions and set TP/SL for those without them
@@ -876,6 +1168,51 @@ async function setSafeTPSL(symbol, position) {
     }
 }
 
+/**
+ * Check if trading pair meets minimum 24-hour volume requirement
+ * @param {string} pair - Trading pair symbol (e.g., 'BTCUSDT')
+ * @returns {Promise<boolean>} True if pair meets volume requirement
+ */
+async function check24hVolumeRequirement(pair) {
+    try {
+        const min24hVolume = parseFloat(process.env.MIN_24H_VOLUME) || 0;
+
+        // Skip volume check if not configured
+        if (min24hVolume <= 0) {
+            return true;
+        }
+
+        // Fetch 24-hour volume data from Bybit
+        const tickers = await restClient.getTickers({
+            category: 'linear',
+            symbol: pair
+        });
+
+        if (tickers.retCode === 0 && tickers.result.list && tickers.result.list.length > 0) {
+            const volume24h = parseFloat(tickers.result.list[0].volume24h);
+            const turnover24h = parseFloat(tickers.result.list[0].turnover24h);
+
+            // Use turnover (volume in USDT) for volume check
+            const volumeInMillions = turnover24h / 1000000;
+            const meetsVolume = volumeInMillions >= min24hVolume;
+
+            if (!meetsVolume) {
+                logIT(`${pair} does not meet minimum 24h volume requirement: ${volumeInMillions.toFixed(2)}M < ${min24hVolume}M`, LOG_LEVEL.WARNING);
+            } else {
+                logIT(`${pair} meets minimum 24h volume requirement: ${volumeInMillions.toFixed(2)}M >= ${min24hVolume}M`, LOG_LEVEL.DEBUG);
+            }
+
+            return meetsVolume;
+        } else {
+            logIT(`Failed to fetch volume data for ${pair}: ${tickers.retMsg}`, LOG_LEVEL.WARNING);
+            return true; // Allow trading if volume data is unavailable
+        }
+    } catch (error) {
+        logIT(`Error checking 24h volume for ${pair}: ${error.message}`, LOG_LEVEL.WARNING);
+        return true; // Allow trading if volume check fails
+    }
+}
+
 //against trend
 async function scalp(pair, index, trigger_qty, liq_volume = null) {
     // Check if new position can be opened considering hedge mode rules
@@ -906,6 +1243,13 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
     }
 
     if (canOpenPosition) {
+        // Check 24-hour volume requirement
+        const volumeCheck = await check24hVolumeRequirement(pair);
+        if (!volumeCheck) {
+            logIT(`Skipping ${pair} - does not meet minimum 24h volume requirement`, LOG_LEVEL.INFO);
+            return;
+        }
+
         //Long liquidation
         if (liquidationOrders[index].side === "Buy") {
             const settings = await JSON.parse(fs.readFileSync('settings.json', 'utf8'));
@@ -939,16 +1283,110 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                         // Process order quantity using utility function
                         orderQty = processOrderQuantity(orderQty, minOrderQty, qtyStep);
 
-                        console.log(chalk.blue("Placing SELL order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
+                        // Check if the order would exceed maximum position size
+                        const maxPositionSize = settings.pairs[settingsIndex].max_position_size;
+                        if (orderQty > maxPositionSize) {
+                            logIT(`Order size (${orderQty}) exceeds maximum position size (${maxPositionSize}) for ${pair}, skipping order`, LOG_LEVEL.WARNING);
+                            console.log(chalk.redBright(`Order size exceeds maximum position size for ${pair}, skipping order`));
+                            return;
+                        }
+
+                        console.log(chalk.blue("Placing LONG order for " + pair + " with quantity: " + orderQty + " (max: " + maxPositionSize + ")"));
 
                         const positionIdx = isHedgeMode() ? 1 : 0; // 1 for hedge Buy, 0 for one-way
                         const order = await createMarketOrder(restClient, pair, "Buy", orderQty, positionIdx);
 
                         // Check if order was successful
                         if (order.retCode === 0 && order.result) {
-                            logIT(`New LONG Order Placed for ${pair} at ${settings.pairs[settingsIndex].order_size} size`, LOG_LEVEL.INFO);
+                            logIT(`New LONG Order Placed for ${pair} at ${orderQty} size`, LOG_LEVEL.INFO);
                             if (process.env.USE_DISCORD == "true") {
-                                orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Buy", position.size, position.percentGain, trigger_qty);
+                                orderWebhook(pair, orderQty, "Buy", position.size, position.percentGain, trigger_qty);
+                            }
+
+                            // Initialize Scaled ATR DCA if enabled
+                            if (process.env.USE_SCALED_ATR_DCA === "true") {
+                                setTimeout(async () => {
+                                    try {
+                                        // Risk management validation
+                                        const currentPrice = liquidationOrders[index].price;
+                                        const orderSize = settings.pairs[settingsIndex].order_size;
+                                        const maxPositionSize = settings.pairs[settingsIndex].max_position_size;
+
+                                        // Calculate maximum DCA allocation based on risk limits
+                                        const maxDCAPercent = parseFloat(process.env.DCA_MAX_TOTAL_PERCENT) || 25;
+                                        const balance = await getBalance();
+                                        const maxDCAAllocation = (balance * maxDCAPercent / 100) / currentPrice;
+
+                                        // Check if DCA allocation exceeds position limits
+                                        if (maxDCAAllocation > maxPositionSize) {
+                                            logIT(`DCA allocation (${maxDCAAllocation}) exceeds max position size (${maxPositionSize}), limiting to position size`, LOG_LEVEL.WARNING);
+                                        }
+
+                                        // Check if DCA initialization is already in progress for this pair/side
+                                        const dcaLockKey = `${pair}_long`;
+                                        if (dcaLocks.has(dcaLockKey)) {
+                                            logIT(`DCA initialization already in progress for ${pair} long, skipping`, LOG_LEVEL.WARNING);
+                                            return;
+                                        }
+
+                                        dcaLocks.set(dcaLockKey, true);
+                                        const positionId = `${pair}_long_${Date.now()}`;
+
+                                        try {
+                                            logIT(`Initializing Scaled ATR DCA for LONG position ${pair}`, LOG_LEVEL.INFO);
+                                            // Use the intended coin quantity for DCA calculations, not USDT value
+                                            const intendedOrderSizeUSD = settings.pairs[settingsIndex].order_size;
+                                            const intendedCoinQuantity = intendedOrderSizeUSD / currentPrice;
+                                            const dcaPosition = await scaledATRDCA.initializeDCAPosition(
+                                                positionId,
+                                                pair,
+                                                'long',
+                                                currentPrice,
+                                                intendedCoinQuantity
+                                            );
+                                        } catch (error) {
+                                            logIT(`DCA initialization failed for ${pair} long: ${error.message}`, LOG_LEVEL.ERROR);
+                                            return;
+                                        } finally {
+                                            dcaLocks.delete(dcaLockKey);
+                                        }
+
+                                        // Send DCA activation notification
+                                        if (process.env.USE_DISCORD === "true" && discordService) {
+                                            const dcaStats = scaledATRDCA.getPositionStatus(positionId);
+                                            discordService.sendDCANotification(pair, dcaStats);
+                                        }
+
+                                        // Set up order fill callback
+                                        scaledATRDCA.registerPositionCallback(positionId, async (event, data) => {
+                                            if (event === 'completed') {
+                                                logIT(`Scaled ATR DCA completed for ${pair}: Avg entry ${data.averageEntryPrice}`, LOG_LEVEL.INFO);
+
+                                                // Send completion notification
+                                                if (process.env.USE_DISCORD === "true" && discordService) {
+                                                    const completionStats = {
+                                                        filledLevels: data.positionState.executedLevels.length,
+                                                        totalLevels: data.positionState.levels.length,
+                                                        successRate: data.successRate,
+                                                        totalAllocated: data.totalAllocated,
+                                                        averageEntryPrice: data.averageEntryPrice,
+                                                        durationMinutes: Math.round((Date.now() - data.positionState.startTime) / 60000)
+                                                    };
+                                                    discordService.sendDCACompletionNotification(pair, completionStats);
+                                                }
+
+                                                // Update TP/SL after DCA completion
+                                                const updatedPosition = await getPosition(pair, "Buy");
+                                                if (updatedPosition.size > 0) {
+                                                    await setSafeTPSL(pair, updatedPosition);
+                                                }
+                                            }
+                                        });
+
+                                    } catch (error) {
+                                        logIT(`Error initializing Scaled ATR DCA for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
+                                    }
+                                }, 1000); // Delay to ensure base order is filled
                             }
 
                             // Set TP/SL after initial entry
@@ -973,7 +1411,8 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
 
                     }
                     //existing position (size > 0) - only DCA, don't enter new trade
-                    else if (position.size > 0 && process.env.USE_DCA_FEATURE == "true") {
+                    // Skip traditional DCA if Scaled ATR DCA is enabled
+                    else if (position.size > 0 && process.env.USE_DCA_FEATURE == "true" && process.env.USE_SCALED_ATR_DCA !== "true") {
                         const hedgeMode = isHedgeMode();
                         //only DCA if position is at a loss or in hedge mode
                         if (position.percentGain < 0 || hedgeMode) {
@@ -1089,16 +1528,110 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                         // Process order quantity using utility function
                         orderQty = processOrderQuantity(orderQty, minOrderQty, qtyStep);
 
-                        console.log(chalk.blue("Placing SELL order for " + pair + " with quantity: " + orderQty + " (min: " + minOrderQty + ", tickSize: " + tickSize + ")"));
+                        // Check if the order would exceed maximum position size
+                        const maxPositionSize = settings.pairs[settingsIndex].max_position_size;
+                        if (orderQty > maxPositionSize) {
+                            logIT(`Order size (${orderQty}) exceeds maximum position size (${maxPositionSize}) for ${pair}, skipping order`, LOG_LEVEL.WARNING);
+                            console.log(chalk.redBright(`Order size exceeds maximum position size for ${pair}, skipping order`));
+                            return;
+                        }
+
+                        console.log(chalk.blue("Placing SHORT order for " + pair + " with quantity: " + orderQty + " (max: " + maxPositionSize + ")"));
 
                         const positionIdx = isHedgeMode() ? 2 : 0; // 2 for hedge Sell, 0 for one-way
                         const order = await createMarketOrder(restClient, pair, "Sell", orderQty, positionIdx);
 
                         // Check if order was successful
                         if (order.retCode === 0 && order.result) {
-                            logIT(`New SHORT Order Placed for ${pair} at ${settings.pairs[settingsIndex].order_size} size`, LOG_LEVEL.INFO);
+                            logIT(`New SHORT Order Placed for ${pair} at ${orderQty} size`, LOG_LEVEL.INFO);
                             if (process.env.USE_DISCORD == "true") {
-                                orderWebhook(pair, settings.pairs[settingsIndex].order_size, "Sell", position.size, position.percentGain, trigger_qty);
+                                orderWebhook(pair, orderQty, "Sell", position.size, position.percentGain, trigger_qty);
+                            }
+
+                            // Initialize Scaled ATR DCA if enabled
+                            if (process.env.USE_SCALED_ATR_DCA === "true") {
+                                setTimeout(async () => {
+                                    try {
+                                        // Risk management validation
+                                        const currentPrice = liquidationOrders[index].price;
+                                        const orderSize = settings.pairs[settingsIndex].order_size;
+                                        const maxPositionSize = settings.pairs[settingsIndex].max_position_size;
+
+                                        // Calculate maximum DCA allocation based on risk limits
+                                        const maxDCAPercent = parseFloat(process.env.DCA_MAX_TOTAL_PERCENT) || 25;
+                                        const balance = await getBalance();
+                                        const maxDCAAllocation = (balance * maxDCAPercent / 100) / currentPrice;
+
+                                        // Check if DCA allocation exceeds position limits
+                                        if (maxDCAAllocation > maxPositionSize) {
+                                            logIT(`DCA allocation (${maxDCAAllocation}) exceeds max position size (${maxPositionSize}), limiting to position size`, LOG_LEVEL.WARNING);
+                                        }
+
+                                        // Check if DCA initialization is already in progress for this pair/side
+                                        const dcaLockKey = `${pair}_short`;
+                                        if (dcaLocks.has(dcaLockKey)) {
+                                            logIT(`DCA initialization already in progress for ${pair} short, skipping`, LOG_LEVEL.WARNING);
+                                            return;
+                                        }
+
+                                        dcaLocks.set(dcaLockKey, true);
+                                        const positionId = `${pair}_short_${Date.now()}`;
+
+                                        try {
+                                            logIT(`Initializing Scaled ATR DCA for SHORT position ${pair}`, LOG_LEVEL.INFO);
+                                            // Use the intended coin quantity for DCA calculations, not USDT value
+                                            const intendedOrderSizeUSD = settings.pairs[settingsIndex].order_size;
+                                            const intendedCoinQuantity = intendedOrderSizeUSD / currentPrice;
+                                            const dcaPosition = await scaledATRDCA.initializeDCAPosition(
+                                                positionId,
+                                                pair,
+                                                'short',
+                                                currentPrice,
+                                                intendedCoinQuantity
+                                            );
+                                        } catch (error) {
+                                            logIT(`DCA initialization failed for ${pair} short: ${error.message}`, LOG_LEVEL.ERROR);
+                                            return;
+                                        } finally {
+                                            dcaLocks.delete(dcaLockKey);
+                                        }
+
+                                        // Send DCA activation notification
+                                        if (process.env.USE_DISCORD === "true" && discordService) {
+                                            const dcaStats = scaledATRDCA.getPositionStatus(positionId);
+                                            discordService.sendDCANotification(pair, dcaStats);
+                                        }
+
+                                        // Set up order fill callback
+                                        scaledATRDCA.registerPositionCallback(positionId, async (event, data) => {
+                                            if (event === 'completed') {
+                                                logIT(`Scaled ATR DCA completed for ${pair}: Avg entry ${data.averageEntryPrice}`, LOG_LEVEL.INFO);
+
+                                                // Send completion notification
+                                                if (process.env.USE_DISCORD === "true" && discordService) {
+                                                    const completionStats = {
+                                                        filledLevels: data.positionState.executedLevels.length,
+                                                        totalLevels: data.positionState.levels.length,
+                                                        successRate: data.successRate,
+                                                        totalAllocated: data.totalAllocated,
+                                                        averageEntryPrice: data.averageEntryPrice,
+                                                        durationMinutes: Math.round((Date.now() - data.positionState.startTime) / 60000)
+                                                    };
+                                                    discordService.sendDCACompletionNotification(pair, completionStats);
+                                                }
+
+                                                // Update TP/SL after DCA completion
+                                                const updatedPosition = await getPosition(pair, "Sell");
+                                                if (updatedPosition.size > 0) {
+                                                    await setSafeTPSL(pair, updatedPosition);
+                                                }
+                                            }
+                                        });
+
+                                    } catch (error) {
+                                        logIT(`Error initializing Scaled ATR DCA for ${pair}: ${error.message}`, LOG_LEVEL.ERROR);
+                                    }
+                                }, 1000); // Delay to ensure base order is filled
                             }
 
                             // Set TP/SL after initial entry
@@ -1122,7 +1655,8 @@ async function scalp(pair, index, trigger_qty, liq_volume = null) {
                     }
                     //existing position (size > 0) - only DCA, don't enter new trade
                     // In hedge mode, we can still open opposite positions
-                    else if (position.size > 0 && process.env.USE_DCA_FEATURE == "true") {
+                    // Skip traditional DCA if Scaled ATR DCA is enabled
+                    else if (position.size > 0 && process.env.USE_DCA_FEATURE == "true" && process.env.USE_SCALED_ATR_DCA !== "true") {
                         //only DCA if position is at a loss or in hedge mode
                         if (position.percentGain < 0 || hedgeMode) {
                             //make sure order is less than max order size
@@ -1937,6 +2471,12 @@ async function reportWebhook() {
         const uptimeString = times[0].toString() + " days " + times[1].toString() + " hr. " + times[2].toString() + " min. " + times[3].toString() + " sec.";
         console.log(`Sending Discord report with ${positionList.length} positions...`);
 
+        // Get DCA statistics if enabled
+        let dcaStats = null;
+        if (process.env.USE_SCALED_ATR_DCA === "true") {
+            dcaStats = await getDCAStatistics();
+        }
+
         try {
             await discordService.sendReport(
                 balance,
@@ -1947,7 +2487,8 @@ async function reportWebhook() {
                 uptimeString,
                 time,
                 positionList,
-                openPositions
+                openPositions,
+                dcaStats
             );
             console.log("Discord report sent successfully");
             safetyReset(); // Additional safety reset
@@ -2006,8 +2547,99 @@ async function testHedgeModeLogic() {
     }
 }
 
+/**
+ * Reset all cache files to ensure fresh start
+ * Clears ATR cache, DCA positions, and performance stats
+ */
+function resetAllCacheFiles() {
+    try {
+        console.log(chalk.blue("Resetting all cache files for fresh start..."));
+
+        const cacheFiles = [
+            'data/atr_cache.json',
+            'data/dca_positions.json',
+            'data/performance_stats.json'
+        ];
+
+        let resetCount = 0;
+
+        for (const filePath of cacheFiles) {
+            try {
+                if (fs.existsSync(filePath)) {
+                    // Create empty cache structure
+                    let emptyCache = {};
+
+                    if (filePath.includes('atr_cache')) {
+                        emptyCache = {
+                            timestamp: Date.now(),
+                            version: "1.0",
+                            cache: []
+                        };
+                    } else if (filePath.includes('dca_positions')) {
+                        emptyCache = {
+                            timestamp: Date.now(),
+                            version: "1.0",
+                            positions: []
+                        };
+                    } else if (filePath.includes('performance_stats')) {
+                        emptyCache = {
+                            timestamp: Date.now(),
+                            version: "1.0",
+                            stats: {
+                                totalPositions: 0,
+                                totalOrders: 0,
+                                filledOrders: 0,
+                                failedOrders: 0,
+                                startTime: Date.now(),
+                                lastUpdateTime: Date.now()
+                            }
+                        };
+                    }
+
+                    fs.writeFileSync(filePath, JSON.stringify(emptyCache, null, 4));
+                    console.log(chalk.green(`✓ Reset cache file: ${filePath}`));
+                    resetCount++;
+                } else {
+                    // Create file if it doesn't exist
+                    const dir = path.dirname(filePath);
+                    if (!fs.existsSync(dir)) {
+                        fs.mkdirSync(dir, { recursive: true });
+                    }
+
+                    let emptyCache = { timestamp: Date.now(), version: "1.0" };
+                    if (filePath.includes('atr_cache')) emptyCache.cache = [];
+                    if (filePath.includes('dca_positions')) emptyCache.positions = [];
+                    if (filePath.includes('performance_stats')) emptyCache.stats = {};
+
+                    fs.writeFileSync(filePath, JSON.stringify(emptyCache, null, 4));
+                    console.log(chalk.yellow(`✓ Created new cache file: ${filePath}`));
+                    resetCount++;
+                }
+            } catch (error) {
+                console.log(chalk.red(`✗ Failed to reset ${filePath}: ${error.message}`));
+            }
+        }
+
+        console.log(chalk.blue(`Cache reset complete: ${resetCount}/${cacheFiles.length} files processed`));
+        logIT(`Cache files reset on startup: ${resetCount} files cleared`, LOG_LEVEL.INFO);
+
+    } catch (error) {
+        console.log(chalk.red(`Cache reset error: ${error.message}`));
+        logIT(`Cache reset failed: ${error.message}`, LOG_LEVEL.ERROR);
+    }
+}
+
 async function main() {
     console.log("Starting 0xLIQD-BYBIT...");
+
+    // Reset all cache files for fresh start (if enabled)
+    if (process.env.RESET_CACHE_ON_STARTUP !== "false") {
+        resetAllCacheFiles();
+    } else {
+        console.log(chalk.yellow("Cache reset disabled by configuration"));
+        logIT("Cache reset skipped - disabled by configuration", LOG_LEVEL.INFO);
+    }
+
     try {
         pairs = await getSymbols();
 
@@ -2037,7 +2669,7 @@ async function main() {
             await apiDataService.forceUpdateAll();
         }
         if (process.env.USE_SET_LEVERAGE.toLowerCase() == "true") {
-            await setLeverage(pairs, process.env.LEVERAGE);
+            // await setLeverage(pairs, process.env.LEVERAGE);
         }
 
         // Check and set TP/SL for existing positions
@@ -2097,6 +2729,16 @@ if (args.includes('--test-hedge')) {
         process.exit(0);
     }).catch(error => {
         console.error(chalk.red("Hedge mode test failed:"), error);
+        process.exit(1);
+    });
+} else if (args.includes('--dca-status')) {
+    // Display DCA system status
+    console.log(chalk.blue("Displaying Scaled ATR DCA system status..."));
+    displayDCAStatus().then(() => {
+        console.log(chalk.green("DCA status display completed"));
+        process.exit(0);
+    }).catch(error => {
+        console.error(chalk.red("DCA status display failed:"), error);
         process.exit(1);
     });
 } else {

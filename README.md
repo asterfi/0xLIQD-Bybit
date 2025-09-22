@@ -87,15 +87,16 @@ RAPIDAPI_KEY = rapidapi_key_here         # RapidAPI Key for liquidation data (re
 ```
 LEVERAGE = 20                           # Default leverage for trades (1-100)
 MAX_OPEN_POSITIONS = 2                  # Maximum concurrent positions
-MAX_POSITION_SIZE_PERCENT = 33           # Max position size as % of total equity
-PERCENT_ORDER_SIZE = 10                  # Order size as % of equity (0.01 = 1%)
+MAX_POSITION_SIZE_PERCENT = 50           # Max position size as % of total equity
+PERCENT_ORDER_SIZE = 5                   # Order size as % of equity (0.05 = 5%)
 MIN_LIQUIDATION_VOLUME = 1500           # Minimum liquidation volume in USDT to trigger trades
 USE_DCA_FEATURE = true                  # Enable DCA (Dollar Cost Averaging) for existing positions
-RISK_LEVEL = 2                          # Risk level for smart settings (1=conservative, 5=aggressive, 0=disable)
+RISK_LEVEL = 0                          # Risk level for smart settings (0=disabled, 1=conservative, 5=aggressive)
 UPDATE_MIN_ORDER_SIZING = true           # Auto-update min order sizes based on balance
 USE_SET_LEVERAGE = true                  # Automatically set leverage on all pairs
+USE_MAX_LEVERAGE = true                 # Use maximum available leverage for pairs (true/false)
 MARGIN = REGULAR_MARGIN                 # Margin mode: ISOLATED_MARGIN, REGULAR_MARGIN, PORTFOLIO_MARGIN
-HEDGE_MODE = false                      # Enable hedge position mode (true/false) for safer trading with opposite positions
+HEDGE_MODE = true                       # Enable hedge position mode (true/false) for safer trading with opposite positions
 ```
 
 ##### Margin Mode Feature
@@ -137,7 +138,7 @@ When `HEDGE_MODE = true`, the bot can open opposite positions (long/short) on th
 ```
 USE_TAKE_PROFIT = true                  # Enable take profit functionality
 TAKE_PROFIT_PERCENT = 0.484             # Take profit percentage (0.484 = 0.484%)
-USE_STOPLOSS = true                     # Enable stop loss functionality
+USE_STOPLOSS = false                    # Enable stop loss functionality
 STOP_LOSS_PERCENT = 50                  # Stop loss percentage (50 = 50%)
 ```
 
@@ -148,9 +149,10 @@ USE_SMART_SETTINGS = true                # Use AI-powered smart settings from li
 
 #### Risk Management & Filters
 ```
-BLACKLIST = ETHUSDT, BTCUSDT, C98USDT    # Pairs to exclude from trading
+BLACKLIST = ETHUSDT, BTCUSDT, BNBUSDT    # Pairs to exclude from trading
 USE_WHITELIST = false                    # If true, only trade pairs in WHITELIST
-WHITELIST = ETCUSDT, BCHUSDT, LINKUSDT   # Whitelist pairs (only active when USE_WHITELIST=true)
+WHITELIST =                             # Whitelist pairs (only active when USE_WHITELIST=true)
+MIN_24H_VOLUME = 50                      # Minimum 24h trading volume in millions (e.g., 50 = $50M). Set to 0 to disable
 ```
 
 #### Discord Integration
@@ -208,4 +210,63 @@ git pull
 
 ```
 pm2 logs 'App ID' --err --lines 1000
+```
+
+### Recent Updates and Enhancements
+
+#### 🚀 Scaled ATR DCA System
+The bot now features an advanced **Scaled ATR DCA** system that uses Average True Range calculations to create intelligent DCA orders with proper scaling:
+
+**Key Features:**
+- **Fast ATR Calculation**: Uses 5m timeframe with 7 periods for responsive volatility measurement (optimized for low hold time trading)
+- **Scaled Orders**: Each subsequent DCA order has increased volume and wider price deviation
+- **Price Precision**: Automatic formatting based on exchange constraints
+- **Position Locking**: Prevents duplicate positions for the same symbol and side
+
+**ATR Configuration:**
+```
+USE_SCALED_ATR_DCA = true               # Enable Scaled ATR DCA system
+ATR_TIMEFRAME = 5m                      # Timeframe for ATR calculation (1m, 5m, 15m, 1h, 4h, 1d)
+ATR_LENGTH = 7                          # Number of candles for ATR calculation
+ATR_DEVIATION = 0.5                     # ATR multiplier for first DCA order (0.5 = 0.5x ATR)
+DCA_NUM_ORDERS = 7                      # Total number of DCA orders per trade
+DCA_VOLUME_SCALE = 1.5                  # Volume scale multiplier for each subsequent order
+DCA_STEP_SCALE = 1.2                    # Price deviation multiplier for each subsequent order
+```
+
+#### 🛡️ Enhanced Position Management
+- **Duplicate Position Prevention**: Enhanced validation prevents creating multiple positions for the same symbol and side
+- **Position Size Validation**: Orders are validated against maximum position size limits
+- **DCA Cleanup**: Automatic cleanup of DCA positions when main positions hit TP/SL
+- **Cache Management**: Optional cache reset on bot startup for fresh trading sessions
+
+#### 📊 Cache Management
+```
+RESET_CACHE_ON_STARTUP = true           # Reset all cache files on bot startup (recommended for fresh starts)
+```
+
+**Cache Files:**
+- `data/atr_cache.json`: ATR calculation cache for performance optimization
+- `data/dca_positions.json`: Active DCA position tracking
+- `data/performance_stats.json`: Trading performance statistics
+
+#### 🔄 Recent Bug Fixes
+- **Discord Notifications**: Fixed "amount.toFixed is not a function" error in webhook messages
+- **Price Precision**: Resolved async/sync mismatch in price formatting causing exchange errors
+- **TP/SL Validation**: Enhanced validation logic for take profit and stop loss price logic
+- **DCA Order Cancellation**: Fixed symbol parameter errors in order cancellation
+- **Position Calculation**: Fixed DCA calculation consistency between USDT values and coin quantities
+
+#### 🎯 Trading Strategy Improvements
+- **Smart Volume Filtering**: Only trades pairs with sufficient 24h volume (configurable)
+- **Real-time Order Monitoring**: Automatic detection of position closures and cleanup
+- **Enhanced Error Handling**: Graceful degradation when external APIs are unavailable
+- **Performance Optimization**: Cache hit rate monitoring and memory usage tracking
+
+#### 🔧 API Data Service Update Intervals
+```
+RESEARCH_UPDATE_INTERVAL = 5            # Update research.json every 5 minutes
+MIN_ORDER_SIZE_UPDATE_INTERVAL = 5      # Update min_order_sizes.json every 5 minutes
+SETTINGS_UPDATE_INTERVAL = 5             # Update settings.json every 5 minutes
+ACCOUNT_UPDATE_INTERVAL = 1              # Update account.json every 1 minute
 ```
